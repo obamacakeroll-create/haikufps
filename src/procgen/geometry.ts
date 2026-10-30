@@ -1,0 +1,110 @@
+import {
+  BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  IcosahedronGeometry,
+  PlaneGeometry,
+} from 'three';
+import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import type { Noise } from './noise';
+
+/**
+ * Pushes each vertex radially from the origin by noise. Vertices that share a position move
+ * together, so separate faces never crack apart at their seams.
+ */
+export function roughen(geometry: BufferGeometry, noise: Noise, amount: number, frequency: number): void {
+  const position = geometry.getAttribute('position');
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const length = Math.hypot(x, y, z) || 1;
+    const offset = noise.fbm(x * frequency, y * frequency, z * frequency, 3) * amount;
+    const scale = (length + offset) / length;
+    position.setXYZ(i, x * scale, y * scale, z * scale);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
+/** Lifts vertices vertically by noise. Used for ground, where radial pushes would tilt it. */
+export function displaceHeight(geometry: BufferGeometry, noise: Noise, amplitude: number, frequency: number): void {
+  const position = geometry.getAttribute('position');
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    position.setY(i, y + noise.fbm(x * frequency, 0, z * frequency, 3) * amplitude);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+}
+
+/** Writes a color attribute. Each band is picked by height with a noise wobble, so layers look hand-painted. */
+export function paintStrata(
+  geometry: BufferGeometry,
+  bands: readonly Color[],
+  noise: Noise,
+  bandHeight: number,
+): void {
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const wobble = noise.fbm(x * 0.08, y * 0.05, z * 0.08, 3) * bandHeight * 0.6;
+    const index = Math.floor((y + wobble) / bandHeight);
+    const count = bands.length;
+    const color = bands[((index % count) + count) % count] ?? bands[0] ?? new Color();
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+  geometry.setAttribute('color', new BufferAttribute(colors, 3));
+}
+
+/** Blends two colors by noise, for ground with no strata. */
+export function paintNoise(geometry: BufferGeometry, from: Color, to: Color, noise: Noise, frequency: number): void {
+  const position = geometry.getAttribute('position');
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    const t = noise.fbm(position.getX(i) * frequency, 0, position.getZ(i) * frequency, 3) * 0.5 + 0.5;
+    colors[i * 3] = from.r + (to.r - from.r) * t;
+    colors[i * 3 + 1] = from.g + (to.g - from.g) * t;
+    colors[i * 3 + 2] = from.b + (to.b - from.b) * t;
+  }
+  geometry.setAttribute('color', new BufferAttribute(colors, 3));
+}
+
+/** Rounded, roughened slab for canyon walls and ledges. Smooth normals, centered on the origin. */
+export function buildSlab(noise: Noise, width: number, height: number, depth: number, segments: number): BufferGeometry {
+  const box = new BoxGeometry(width, height, depth, segments, segments * 2, segments);
+  box.deleteAttribute('normal');
+  box.deleteAttribute('uv');
+  const geometry = mergeVertices(box);
+  roughen(geometry, noise, Math.min(width, height, depth) * 0.12, 0.45);
+  return geometry;
+}
+
+/** Faceted rock. Non-indexed so every face gets its own normal, which gives the low-poly ink look. */
+export function buildRock(noise: Noise, radius: number, detail: number): BufferGeometry {
+  const sphere = new IcosahedronGeometry(radius, detail);
+  sphere.deleteAttribute('normal');
+  sphere.deleteAttribute('uv');
+  const geometry = mergeVertices(sphere);
+  geometry.scale(1, 0.7, 1);
+  roughen(geometry, noise, radius * 0.22, 0.9);
+  const faceted = geometry.toNonIndexed();
+  faceted.computeVertexNormals();
+  return faceted;
+}
+
+/** Ground plane in the XZ plane, with noise lifting it and a UV layout for the mottle texture. */
+export function buildFloor(noise: Noise, width: number, depth: number, segmentsX: number, segmentsZ: number): BufferGeometry {
+  const geometry = new PlaneGeometry(width, depth, segmentsX, segmentsZ);
+  geometry.rotateX(-Math.PI / 2);
+  displaceHeight(geometry, noise, 0.6, 0.12);
+  return geometry;
+}

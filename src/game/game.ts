@@ -1,13 +1,8 @@
 import {
-  BoxGeometry,
-  Color,
-  DirectionalLight,
   Fog,
-  HemisphereLight,
-  Mesh,
-  MeshStandardMaterial,
+  NeutralToneMapping,
+  PCFShadowMap,
   PerspectiveCamera,
-  PlaneGeometry,
   Scene,
   Vector3,
   WebGLRenderer,
@@ -23,7 +18,15 @@ import { AimState } from '../input/aim';
 import { GamepadSource } from '../input/gamepad';
 import { type Controls, InputManager, type InputEvents } from '../input/input';
 import { KeyboardMouseSource } from '../input/keyboard-mouse';
+import { createMottleTexture, createPaperTexture } from '../procgen/textures';
+import { createLighting, SUN_DIRECTION, type Lighting } from '../render/lighting';
+import { SKY_LAYER } from '../render/layers';
+import { PALETTE } from '../render/palette';
+import { RenderPipeline } from '../render/pipeline';
+import { createSky, type Sky } from '../render/sky';
+import { createToonRamp } from '../render/toon';
 import { Ui } from '../ui/ui';
+import { buildLookTestSet } from '../world/look-test';
 
 type GameState = 'title' | 'playing' | 'paused';
 
@@ -32,6 +35,7 @@ const PITCH_LIMIT = 1.5;
 const ADS_SENSITIVITY = 0.55;
 const ADS_ZOOM = 0.62;
 const FLY_SPEED = 12;
+const MAX_PIXEL_RATIO = 1.5;
 const START_ACTIONS: readonly Action[] = ['confirm', 'fire', 'jump', 'dash', 'reload', 'aim', 'pause', 'back'];
 const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', 'weapon1', 'weapon2', 'weapon3'];
 
@@ -44,6 +48,9 @@ export class Game {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
   private readonly camera = new PerspectiveCamera(75, 1, 0.05, 400);
+  private readonly pipeline: RenderPipeline;
+  private readonly sky: Sky;
+  private readonly lighting: Lighting;
   private readonly store: KeyValueStore = browserStore();
   private readonly settings: Settings;
   private readonly events = new Emitter<InputEvents>();
@@ -58,6 +65,7 @@ export class Game {
   private yaw = 0;
   private pitch = 0;
   private adsBlend = 0;
+  private elapsed = 0;
 
   constructor(root: HTMLElement) {
     this.settings = loadSave(this.store).settings;
@@ -66,9 +74,24 @@ export class Game {
     this.canvas.className = 'game';
     root.append(this.canvas);
 
-    this.renderer = new WebGLRenderer({ canvas: this.canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    this.buildPlaceholderWorld();
+    this.renderer = new WebGLRenderer({ canvas: this.canvas });
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = PCFShadowMap;
+    this.renderer.toneMapping = NeutralToneMapping;
+
+    const rng = createRng(11);
+    const ramp = createToonRamp();
+    const mottle = createMottleTexture(rng);
+    const paper = createPaperTexture(rng);
+
+    this.scene.background = null;
+    this.scene.fog = new Fog(PALETTE.fog, 40, 240);
+    this.sky = createSky(PALETTE.skyTop, PALETTE.skyHorizon, SUN_DIRECTION);
+    this.scene.add(this.sky.mesh);
+    this.lighting = createLighting(this.scene);
+    buildLookTestSet(this.scene, { ramp, mottle });
+    this.camera.layers.enable(SKY_LAYER);
+    this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, paper);
 
     this.keyboard = new KeyboardMouseSource(this.canvas, () => this.settings);
     this.gamepad = new GamepadSource(() => this.settings);
@@ -104,6 +127,7 @@ export class Game {
   }
 
   private update(dt: number): void {
+    this.elapsed += dt;
     const controls = this.input.poll(dt);
     if (controls.pressed('debug')) this.ui.toggleDebug();
     this.aim.setMode(this.settings.aimMode);
@@ -148,7 +172,10 @@ export class Game {
 
   private render(): void {
     this.updateCamera();
-    this.renderer.render(this.scene, this.camera);
+    this.sky.mesh.position.copy(this.position);
+    this.sky.setTime(this.elapsed);
+    this.lighting.follow(this.position);
+    this.pipeline.render();
     if (this.ui.debugVisible) this.ui.setDebugText(this.debugText());
   }
 
@@ -163,8 +190,7 @@ export class Game {
   }
 
   private debugText(): string {
-    const calls = this.renderer.info.render.calls;
-    const triangles = this.renderer.info.render.triangles;
+    const { calls, triangles } = this.renderer.info.render;
     const { x, y, z } = this.position;
     return [
       `fps ${this.loop.stats.fps.toFixed(0)}   frame ${this.loop.stats.frameMs.toFixed(1)} ms`,
@@ -225,35 +251,8 @@ export class Game {
   private readonly resize = (): void => {
     const width = window.innerWidth;
     const height = window.innerHeight;
-    this.renderer.setSize(width, height, false);
+    this.pipeline.setSize(width, height, Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO));
     this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
   };
-
-  /** Stand-in geometry so the camera and aim have something to look at. Replaced in milestone 2. */
-  private buildPlaceholderWorld(): void {
-    const rng = createRng(7);
-    const floor = new Mesh(
-      new PlaneGeometry(400, 400),
-      new MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.9 }),
-    );
-    floor.rotation.x = -Math.PI / 2;
-    this.scene.add(floor);
-
-    const crate = new BoxGeometry(1, 1, 1);
-    const material = new MeshStandardMaterial({ color: 0xc86b3c, roughness: 0.6 });
-    for (let i = 0; i < 120; i++) {
-      const mesh = new Mesh(crate, material);
-      mesh.position.set(rng.range(-60, 60), rng.range(0.5, 4), rng.range(-120, 20));
-      mesh.scale.setScalar(rng.range(0.6, 3));
-      this.scene.add(mesh);
-    }
-
-    this.scene.background = new Color(0x0b0c10);
-    this.scene.fog = new Fog(0x0b0c10, 30, 160);
-    this.scene.add(new HemisphereLight(0xbfd8ff, 0x1a1408, 1.2));
-    const sun = new DirectionalLight(0xffe2b8, 2.2);
-    sun.position.set(20, 40, 10);
-    this.scene.add(sun);
-  }
 }
