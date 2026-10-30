@@ -29,6 +29,14 @@ export interface CombatEvents {
   blast: { x: number; y: number; z: number; radius: number };
   /** A dormant mimic showed itself. */
   reveal: { x: number; y: number; z: number };
+  /** The player changed weapon. */
+  switch: { weapon: WeaponId };
+  /** A reload started. */
+  reload: { weapon: WeaponId };
+  /** A reload ran to the end and the magazine is full. */
+  reloaded: { weapon: WeaponId };
+  /** A spitter lobbed a glob. */
+  spit: { x: number; y: number; z: number };
 }
 
 /** The player's intent for one simulation step. */
@@ -194,10 +202,14 @@ export class Combat {
   }
 
   private handleWeapons(dt: number, input: CombatInput): void {
+    const before = this.arsenal.index;
+    const wasReloading = this.arsenal.reloading;
     this.arsenal.update(dt);
+    if (wasReloading && !this.arsenal.reloading) this.events.emit('reloaded', { weapon: this.arsenal.weapon.id });
     if (input.weaponIndex >= 0) this.arsenal.select(input.weaponIndex);
     else if (input.weaponStep !== 0) this.arsenal.cycle(input.weaponStep > 0 ? 1 : -1);
-    if (input.reloadPressed) this.arsenal.reload();
+    if (this.arsenal.index !== before) this.events.emit('switch', { weapon: this.arsenal.weapon.id });
+    if (input.reloadPressed && this.arsenal.reload()) this.events.emit('reload', { weapon: this.arsenal.weapon.id });
 
     const trigger = this.arsenal.weapon.automatic ? input.fireHeld : input.firePressed;
     if (trigger) this.fire(input);
@@ -307,6 +319,7 @@ export class Combat {
   }
 
   private spit(from: Vec3, to: Vec3): void {
+    this.events.emit('spit', from);
     const length = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z) || 1;
     const vx = ((to.x - from.x) / length) * GLOB_SPEED;
     const vy = ((to.y - from.y) / length) * GLOB_SPEED;

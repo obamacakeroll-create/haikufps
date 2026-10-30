@@ -20,6 +20,8 @@ export interface UiHandlers {
 
 type PauseView = 'main' | 'options';
 
+const percent = (value: number): string => `${Math.round(value * 100)}%`;
+
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className: string,
@@ -205,6 +207,9 @@ export class Ui {
         },
       ),
       this.numericRow('Field of view', 'fov', 1, (v) => `${v.toFixed(0)}°`),
+      this.numericRow('Master volume', 'masterVolume', 0.05, percent),
+      this.numericRow('Music volume', 'musicVolume', 0.05, percent),
+      this.numericRow('Sound effects volume', 'sfxVolume', 0.05, percent),
       toggleRow(
         'Rumble',
         () => settings.rumble,

@@ -14,6 +14,10 @@ import { createRng } from '../core/rng';
 import { SAVE_VERSION, loadSave, writeSave } from '../core/save';
 import { type Settings } from '../core/settings';
 import { browserStore, type KeyValueStore } from '../core/storage';
+import { AudioEngine } from '../audio/engine';
+import { Music } from '../audio/music';
+import { Sfx } from '../audio/sfx';
+import { difficulty } from '../combat/spawner';
 import { type WeaponId } from '../combat/weapons';
 import type { Action } from '../input/actions';
 import { AimState } from '../input/aim';
@@ -85,6 +89,9 @@ export class Game {
   private readonly aim: AimState;
   private readonly ui: Ui;
   private readonly loop: Loop;
+  private readonly engine = new AudioEngine();
+  private readonly sfx = new Sfx(this.engine);
+  private readonly music = new Music(this.engine);
   private run: Run;
   /** Camera eye at the last two simulation steps. Rendering blends between them. */
   private readonly eye = new Vector3(0, BODY.eyeHeight, 0);
@@ -102,6 +109,11 @@ export class Game {
 
   constructor(root: HTMLElement) {
     this.settings = loadSave(this.store).settings;
+    this.applyVolumes();
+    // Browsers only allow sound after a real gesture, so the first click or key unlocks it.
+    const unlock = (): void => this.engine.unlock();
+    window.addEventListener('pointerdown', unlock);
+    window.addEventListener('keydown', unlock);
 
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'game';
@@ -145,7 +157,10 @@ export class Game {
       onRetry: () => this.retry(),
       onResume: () => this.resume(),
       onQuit: () => this.quitToTitle(),
-      onSettingsChanged: () => this.persist(),
+      onSettingsChanged: () => {
+        this.persist();
+        this.applyVolumes();
+      },
     });
 
     this.loop = createLoop({
@@ -173,6 +188,7 @@ export class Game {
     this.previousEye.copy(this.eye);
     const controls = this.input.poll(dt);
     if (controls.pressed('debug')) this.ui.toggleDebug();
+    if (this.state !== 'playing') this.menuSounds(controls);
     this.aim.setMode(this.settings.aimMode);
 
     switch (this.state) {
@@ -189,6 +205,21 @@ export class Game {
         this.updateDead(controls, dt);
         break;
     }
+  }
+
+  /** Menu feedback. The same buttons move the player in a run, so this only runs outside one. */
+  private menuSounds(controls: Controls): void {
+    if (controls.pressed('up') || controls.pressed('down')) this.sfx.ui('move');
+    if (controls.pressed('confirm')) this.sfx.ui('confirm');
+    if (controls.pressed('back')) this.sfx.ui('back');
+  }
+
+  private applyVolumes(): void {
+    this.engine.setVolumes({
+      master: this.settings.masterVolume,
+      music: this.settings.musicVolume,
+      sfx: this.settings.sfxVolume,
+    });
   }
 
   private updatePlaying(controls: Controls, dt: number): void {
@@ -211,6 +242,9 @@ export class Game {
     const rightZ = Math.sin(this.yaw);
     // The aim is the camera's forward vector, so shots land where the reticle is.
     const pitchCos = Math.cos(this.pitch);
+    const { body } = this.run;
+    const wasGrounded = body.grounded;
+    const dashWas = body.dashTime;
     this.run.update(dt, {
       wishX: forwardX * controls.move.y + rightX * controls.move.x,
       wishZ: forwardZ * controls.move.y + rightZ * controls.move.x,
@@ -230,6 +264,9 @@ export class Game {
       aimY: Math.sin(this.pitch),
       aimZ: forwardZ * pitchCos,
     });
+    if (controls.pressed('jump') && wasGrounded) this.sfx.jump();
+    if (body.dashTime > 0 && dashWas <= 0) this.sfx.dash();
+    this.music.update(difficulty(this.run.time), this.run.gap);
     this.syncEye();
 
     this.adsBlend += ((aiming ? 1 : 0) - this.adsBlend) * Math.min(1, dt * 14);
@@ -318,28 +355,48 @@ export class Game {
   private createRun(): Run {
     const run = new Run(this.scene, this.assets, Math.floor(Math.random() * 0x7fffffff));
     // A soft pulse when the zone is marked, and a firmer one when the walls start to move.
-    run.reshaper.events.on('telegraph', () => this.gamepad.rumble(0.2, 0.45, 700));
-    run.reshaper.events.on('move', () => this.gamepad.rumble(0.55, 0.9, 900));
+    run.reshaper.events.on('telegraph', () => {
+      this.gamepad.rumble(0.2, 0.45, 700);
+      this.music.stinger('telegraph');
+    });
+    run.reshaper.events.on('move', () => {
+      this.gamepad.rumble(0.55, 0.9, 900);
+      this.music.stinger('move');
+    });
 
     const { events } = run.combat;
     events.on('shot', ({ weapon }) => {
+      this.sfx.shot(weapon);
       const feel = SHOT_FEEL[weapon];
       this.viewmodel.kick(feel.gun);
       if (!this.settings.reducedMotion) this.kick = Math.max(this.kick, feel.pitch);
       this.gamepad.rumble(feel.rumble[0], feel.rumble[1], feel.rumble[2]);
     });
     events.on('hit', ({ kill }) => {
+      this.sfx.hit(kill);
       this.hud.hit(kill);
       if (kill) this.gamepad.rumble(0.35, 0.5, 120);
       else this.gamepad.rumble(0.12, 0.25, 50);
     });
     events.on('hurt', () => {
+      this.sfx.hurt();
       this.hud.hurt();
       this.hurtShake = 1;
       this.gamepad.rumble(0.9, 0.5, 220);
     });
-    events.on('blast', () => this.gamepad.rumble(0.6, 0.6, 200));
-    events.on('reveal', () => this.gamepad.rumble(0.7, 0.4, 260));
+    events.on('kill', ({ kind }) => this.sfx.kill(kind));
+    events.on('blast', () => {
+      this.sfx.blast();
+      this.gamepad.rumble(0.6, 0.6, 200);
+    });
+    events.on('reveal', () => {
+      this.sfx.reveal();
+      this.gamepad.rumble(0.7, 0.4, 260);
+    });
+    events.on('switch', () => this.sfx.switchWeapon());
+    events.on('reload', () => this.sfx.reloadStart());
+    events.on('reloaded', () => this.sfx.reloadDone());
+    events.on('spit', () => this.sfx.spit());
     return run;
   }
 
@@ -399,10 +456,14 @@ export class Game {
     this.state = 'playing';
     this.ui.hideAll();
     this.requestLock();
+    this.music.duck(false);
+    this.music.start();
   }
 
   private die(): void {
     this.state = 'dead';
+    this.sfx.death();
+    this.music.duck(true);
     this.deadTime = 0;
     this.aim.release();
     this.ui.showDeath({
@@ -419,6 +480,7 @@ export class Game {
     this.state = 'paused';
     this.aim.release();
     this.ui.showPause();
+    this.music.duck(true);
     this.exitLock();
   }
 
@@ -427,12 +489,14 @@ export class Game {
     this.state = 'playing';
     this.ui.hideAll();
     this.requestLock();
+    this.music.duck(false);
   }
 
   private quitToTitle(): void {
     this.state = 'title';
     this.aim.release();
     this.ui.showTitle();
+    this.music.stop();
     this.exitLock();
   }
 
