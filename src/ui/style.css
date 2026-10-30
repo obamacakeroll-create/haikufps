@@ -259,6 +259,221 @@ canvas.game {
   color: var(--teal);
 }
 
+.hud-kills {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  margin: 0;
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 1.5rem;
+  letter-spacing: 0.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-weapon {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.hud-weapon-name {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--paper-dim);
+}
+
+.hud-ammo {
+  margin: 0;
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 2.4rem;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-ammo.is-warn {
+  color: var(--vermilion);
+}
+
+.hud-pips {
+  display: flex;
+  gap: 6px;
+}
+
+.hud-pip {
+  display: grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  border: 1px solid rgba(239, 231, 214, 0.35);
+  font-size: 0.75rem;
+  color: var(--paper-dim);
+}
+
+.hud-pip.is-active {
+  background: var(--paper);
+  border-color: var(--paper);
+  color: var(--ink);
+}
+
+.hud-damage {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, transparent 42%, rgba(255, 90, 54, 0.6) 100%);
+}
+
+.hud-damage.is-on {
+  animation: damage-flash 0.5s ease-out;
+}
+
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transition: scale 0.12s ease-out;
+}
+
+.crosshair.is-ads {
+  scale: 0.7;
+}
+
+.crosshair .tick {
+  position: absolute;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px rgba(11, 12, 16, 0.8);
+}
+
+.crosshair .tick-top,
+.crosshair .tick-bottom {
+  left: -1px;
+  width: 2px;
+  height: 6px;
+}
+
+.crosshair .tick-top {
+  top: -15px;
+}
+
+.crosshair .tick-bottom {
+  top: 9px;
+}
+
+.crosshair .tick-left,
+.crosshair .tick-right {
+  top: -1px;
+  width: 6px;
+  height: 2px;
+}
+
+.crosshair .tick-left {
+  left: -15px;
+}
+
+.crosshair .tick-right {
+  left: 9px;
+}
+
+.crosshair .dot {
+  position: absolute;
+  left: -2px;
+  top: -2px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--paper);
+}
+
+.crosshair.is-hit .tick {
+  animation: hit-flash 0.25s ease-out;
+}
+
+.crosshair.is-kill .tick {
+  animation: kill-flash 0.35s ease-out;
+}
+
+.title-stats {
+  margin: 0.6rem 0 0;
+  font-size: 0.8rem;
+  letter-spacing: 0.14em;
+  color: var(--paper-dim);
+}
+
+.panel {
+  width: min(520px, calc(100% - 32px));
+  margin: 1.2rem auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.panel .row {
+  margin: 0;
+  padding: 0.35rem 0;
+  font-size: 0.85rem;
+  border-bottom: 1px solid rgba(239, 231, 214, 0.12);
+}
+
+.panel .empty {
+  color: var(--paper-dim);
+}
+
+.unlock {
+  padding: 0.4rem 0.8rem;
+  border-left: 3px solid rgba(239, 231, 214, 0.25);
+}
+
+.unlock.is-earned {
+  border-left-color: var(--teal);
+}
+
+.unlock-title {
+  margin: 0;
+  letter-spacing: 0.12em;
+}
+
+.unlock-goal {
+  margin: 0.2rem 0 0;
+  font-size: 0.78rem;
+  color: var(--paper-dim);
+}
+
+.death-notes {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+  letter-spacing: 0.14em;
+  color: var(--teal);
+}
+
+@keyframes damage-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes hit-flash {
+  from {
+    background: var(--vermilion);
+  }
+}
+
+@keyframes kill-flash {
+  from {
+    background: var(--teal);
+    transform: scale(1.8);
+  }
+}
+
 @keyframes blink {
   to {
     visibility: hidden;

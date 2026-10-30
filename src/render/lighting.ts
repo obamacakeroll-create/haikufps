@@ -8,7 +8,7 @@ export interface Lighting {
 }
 
 export function createLighting(scene: Scene): Lighting {
-  const hemisphere = new HemisphereLight(0x9fb6d9, 0x2a1b1f, 1.1);
+  const hemisphere = new HemisphereLight(0x9fb6d9, 0x4a3238, 1.25);
   const sun = new DirectionalLight(0xffd7a8, 2.6);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);

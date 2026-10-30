@@ -9,7 +9,7 @@ export const PALETTE = {
   skyHorizon: hex('#f4a261'),
   fog: hex('#4a3340'),
   floorLight: hex('#8a5f4f'),
-  floorDark: hex('#4d3140'),
+  floorDark: hex('#6b4a58'),
   strata: [
     hex('#d9a066'),
     hex('#b5583a'),
