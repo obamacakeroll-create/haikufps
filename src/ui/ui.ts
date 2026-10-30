@@ -4,6 +4,7 @@ import { Menu, type MenuRow } from './menu';
 
 export interface UiHandlers {
   onStart(): void;
+  onRetry(): void;
   onResume(): void;
   onQuit(): void;
   onSettingsChanged(): void;
@@ -30,6 +31,8 @@ function toggleRow(label: string, get: () => boolean, set: (value: boolean) => v
 export class Ui {
   private readonly titleScreen: HTMLElement;
   private readonly pauseScreen: HTMLElement;
+  private readonly deathScreen: HTMLElement;
+  private readonly deathStats: HTMLElement;
   private readonly debugPanel: HTMLElement;
   private readonly mainMenu: Menu;
   private readonly optionsMenu: Menu;
@@ -63,10 +66,20 @@ export class Ui {
       this.optionsMenu.element,
     );
 
+    this.deathStats = element('p', 'death-stats');
+    this.deathScreen = element('section', 'screen death-screen');
+    this.deathScreen.append(
+      element('h2', 'heading', 'The tide caught you'),
+      this.deathStats,
+      element('p', 'prompt', 'Jump or click to run again'),
+      element('p', 'hint', 'Pause or back for the title'),
+    );
+    this.deathScreen.addEventListener('click', () => handlers.onRetry());
+
     this.debugPanel = element('pre', 'debug');
     this.debugPanel.hidden = true;
 
-    root.append(this.titleScreen, this.pauseScreen, this.debugPanel);
+    root.append(this.titleScreen, this.pauseScreen, this.deathScreen, this.debugPanel);
     this.hideAll();
   }
 
@@ -83,20 +96,36 @@ export class Ui {
   }
 
   showTitle(): void {
+    this.hideAll();
     this.titleScreen.hidden = false;
-    this.pauseScreen.hidden = true;
     this.view = 'main';
   }
 
   showPause(): void {
-    this.titleScreen.hidden = true;
+    this.hideAll();
     this.pauseScreen.hidden = false;
     this.showView('main');
+  }
+
+  showDeath(distance: number, seconds: number): void {
+    this.hideAll();
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
+    this.deathStats.textContent = `${Math.floor(distance)} m in ${minutes}:${secs}`;
+    this.deathScreen.hidden = false;
   }
 
   hideAll(): void {
     this.titleScreen.hidden = true;
     this.pauseScreen.hidden = true;
+    this.deathScreen.hidden = true;
+  }
+
+  /** Returns 'retry' or 'title' when the player picks an option on the death screen. */
+  updateDeath(controls: Controls): 'retry' | 'title' | undefined {
+    if (controls.pressed('pause') || controls.pressed('back')) return 'title';
+    if (controls.pressed('confirm') || controls.pressed('fire') || controls.pressed('jump')) return 'retry';
+    return undefined;
   }
 
   /** Returns 'resume' when the player leaves the pause menu. */

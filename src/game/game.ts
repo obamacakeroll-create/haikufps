@@ -18,6 +18,7 @@ import { AimState } from '../input/aim';
 import { GamepadSource } from '../input/gamepad';
 import { type Controls, InputManager, type InputEvents } from '../input/input';
 import { KeyboardMouseSource } from '../input/keyboard-mouse';
+import { BODY } from '../player/movement';
 import { createMottleTexture, createPaperTexture } from '../procgen/textures';
 import { createLighting, SUN_DIRECTION, type Lighting } from '../render/lighting';
 import { SKY_LAYER } from '../render/layers';
@@ -25,16 +26,17 @@ import { PALETTE } from '../render/palette';
 import { RenderPipeline } from '../render/pipeline';
 import { createSky, type Sky } from '../render/sky';
 import { createToonRamp } from '../render/toon';
+import { Hud } from '../ui/hud';
 import { Ui } from '../ui/ui';
-import { buildLookTestSet } from '../world/look-test';
+import { Run, type RunAssets } from './run';
 
-type GameState = 'title' | 'playing' | 'paused';
+type GameState = 'title' | 'playing' | 'paused' | 'dead';
 
 const DEG = Math.PI / 180;
 const PITCH_LIMIT = 1.5;
 const ADS_SENSITIVITY = 0.55;
 const ADS_ZOOM = 0.62;
-const FLY_SPEED = 12;
+const ADS_MOVE_SCALE = 0.85;
 const MAX_PIXEL_RATIO = 1.5;
 const START_ACTIONS: readonly Action[] = ['confirm', 'fire', 'jump', 'dash', 'reload', 'aim', 'pause', 'back'];
 const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', 'weapon1', 'weapon2', 'weapon3'];
@@ -51,6 +53,8 @@ export class Game {
   private readonly pipeline: RenderPipeline;
   private readonly sky: Sky;
   private readonly lighting: Lighting;
+  private readonly assets: RunAssets;
+  private readonly hud: Hud;
   private readonly store: KeyValueStore = browserStore();
   private readonly settings: Settings;
   private readonly events = new Emitter<InputEvents>();
@@ -60,7 +64,10 @@ export class Game {
   private readonly aim: AimState;
   private readonly ui: Ui;
   private readonly loop: Loop;
-  private readonly position = new Vector3(0, 1.7, 8);
+  private run: Run;
+  /** Camera eye at the last two simulation steps. Rendering blends between them. */
+  private readonly eye = new Vector3(0, BODY.eyeHeight, 0);
+  private readonly previousEye = new Vector3(0, BODY.eyeHeight, 0);
   private state: GameState = 'title';
   private yaw = 0;
   private pitch = 0;
@@ -83,15 +90,16 @@ export class Game {
     const ramp = createToonRamp();
     const mottle = createMottleTexture(rng);
     const paper = createPaperTexture(rng);
+    this.assets = { ramp, mottle };
 
     this.scene.background = null;
     this.scene.fog = new Fog(PALETTE.fog, 40, 240);
     this.sky = createSky(PALETTE.skyTop, PALETTE.skyHorizon, SUN_DIRECTION);
     this.scene.add(this.sky.mesh);
     this.lighting = createLighting(this.scene);
-    buildLookTestSet(this.scene, { ramp, mottle });
     this.camera.layers.enable(SKY_LAYER);
     this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, paper);
+    this.run = this.createRun();
 
     this.keyboard = new KeyboardMouseSource(this.canvas, () => this.settings);
     this.gamepad = new GamepadSource(() => this.settings);
@@ -101,8 +109,10 @@ export class Game {
     const uiRoot = document.createElement('div');
     uiRoot.className = 'ui';
     root.append(uiRoot);
+    this.hud = new Hud(uiRoot);
     this.ui = new Ui(uiRoot, this.settings, {
       onStart: () => this.startFromTitle(),
+      onRetry: () => this.retry(),
       onResume: () => this.resume(),
       onQuit: () => this.quitToTitle(),
       onSettingsChanged: () => this.persist(),
@@ -110,7 +120,7 @@ export class Game {
 
     this.loop = createLoop({
       update: (dt) => this.update(dt),
-      render: () => this.render(),
+      render: (alpha) => this.render(alpha),
     });
 
     window.addEventListener('resize', this.resize);
@@ -119,6 +129,8 @@ export class Game {
       if (document.hidden) this.pause();
     });
     this.resize();
+    this.syncEye();
+    this.previousEye.copy(this.eye);
     this.ui.showTitle();
   }
 
@@ -128,6 +140,7 @@ export class Game {
 
   private update(dt: number): void {
     this.elapsed += dt;
+    this.previousEye.copy(this.eye);
     const controls = this.input.poll(dt);
     if (controls.pressed('debug')) this.ui.toggleDebug();
     this.aim.setMode(this.settings.aimMode);
@@ -141,6 +154,9 @@ export class Game {
         break;
       case 'paused':
         if (this.ui.updatePaused(controls) === 'resume') this.resume();
+        break;
+      case 'dead':
+        this.updateDead(controls);
         break;
     }
   }
@@ -157,55 +173,124 @@ export class Game {
     this.yaw += controls.look.x * sensitivity * DEG;
     this.pitch = clamp(this.pitch + controls.look.y * sensitivity * DEG, -PITCH_LIMIT, PITCH_LIMIT);
 
-    // Placeholder free-fly movement. Real movement arrives with the player controller.
-    const step = FLY_SPEED * dt;
     const forwardX = Math.sin(this.yaw);
     const forwardZ = -Math.cos(this.yaw);
     const rightX = Math.cos(this.yaw);
     const rightZ = Math.sin(this.yaw);
-    this.position.x += (forwardX * controls.move.y + rightX * controls.move.x) * step;
-    this.position.z += (forwardZ * controls.move.y + rightZ * controls.move.x) * step;
-    if (controls.held('jump')) this.position.y += step;
+    this.run.update(dt, {
+      wishX: forwardX * controls.move.y + rightX * controls.move.x,
+      wishZ: forwardZ * controls.move.y + rightZ * controls.move.x,
+      speedScale: aiming ? ADS_MOVE_SCALE : 1,
+      facingX: forwardX,
+      facingZ: forwardZ,
+      jumpPressed: controls.pressed('jump'),
+      jumpHeld: controls.held('jump'),
+      dashPressed: controls.pressed('dash'),
+    });
+    this.syncEye();
 
     this.adsBlend += ((aiming ? 1 : 0) - this.adsBlend) * Math.min(1, dt * 14);
+    if (this.run.status === 'over') this.die();
   }
 
-  private render(): void {
-    this.updateCamera();
-    this.sky.mesh.position.copy(this.position);
+  private updateDead(controls: Controls): void {
+    switch (this.ui.updateDeath(controls)) {
+      case 'retry':
+        this.retry();
+        break;
+      case 'title':
+        this.quitToTitle();
+        break;
+      default:
+        break;
+    }
+  }
+
+  private render(alpha: number): void {
+    this.updateCamera(alpha);
+    this.sky.mesh.position.copy(this.camera.position);
     this.sky.setTime(this.elapsed);
-    this.lighting.follow(this.position);
+    this.lighting.follow(this.camera.position);
+
+    const playing = this.state === 'playing';
+    this.hud.setVisible(playing);
+    if (playing) {
+      this.hud.update({
+        distance: this.run.distance,
+        gap: this.run.gap,
+        fuel: this.run.body.fuel,
+        dashReady: this.run.body.dashCooldown <= 0,
+      });
+    }
+
     this.pipeline.render();
     if (this.ui.debugVisible) this.ui.setDebugText(this.debugText());
   }
 
-  private updateCamera(): void {
+  private updateCamera(alpha: number): void {
     const fov = this.settings.fov * (1 - (1 - ADS_ZOOM) * this.adsBlend);
     if (this.camera.fov !== fov) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
-    this.camera.position.copy(this.position);
+    this.camera.position.lerpVectors(this.previousEye, this.eye, alpha);
     this.camera.rotation.set(this.pitch, -this.yaw, 0, 'YXZ');
+  }
+
+  private syncEye(): void {
+    const { x, y, z } = this.run.body;
+    this.eye.set(x, y + BODY.eyeHeight, z);
+  }
+
+  private createRun(): Run {
+    return new Run(this.scene, this.assets, Math.floor(Math.random() * 0x7fffffff));
   }
 
   private debugText(): string {
     const { calls, triangles } = this.renderer.info.render;
-    const { x, y, z } = this.position;
+    const { body } = this.run;
+    const dash = body.dashCooldown > 0 ? `${body.dashCooldown.toFixed(1)} s` : 'ready';
     return [
       `fps ${this.loop.stats.fps.toFixed(0)}   frame ${this.loop.stats.frameMs.toFixed(1)} ms`,
-      `draw calls ${calls}   triangles ${triangles}`,
+      `draw calls ${calls}   triangles ${triangles}   sections ${this.run.loadedSections}`,
       `state ${this.state}   device ${this.input.device}`,
       `aim ${this.settings.aimMode}   ${this.aim.active ? 'ON' : 'off'}`,
-      `pos ${x.toFixed(1)} ${y.toFixed(1)} ${z.toFixed(1)}`,
+      `run ${this.run.time.toFixed(1)} s   dist ${this.run.distance.toFixed(1)} m`,
+      `speed ${this.run.forwardSpeed.toFixed(1)}   pace ${this.run.pace.toFixed(1)}   gap ${this.run.gap.toFixed(1)} m`,
+      `pos ${body.x.toFixed(1)} ${body.y.toFixed(1)} ${body.z.toFixed(1)}   ${body.grounded ? 'ground' : 'air'}`,
+      `fuel ${(body.fuel * 100).toFixed(0)}%   dash ${dash}`,
     ].join('\n');
   }
 
   private startFromTitle(): void {
     if (this.state !== 'title') return;
+    this.beginRun();
+  }
+
+  private retry(): void {
+    if (this.state !== 'dead') return;
+    this.beginRun();
+  }
+
+  private beginRun(): void {
+    this.run.dispose();
+    this.run = this.createRun();
+    this.yaw = 0;
+    this.pitch = 0;
+    this.adsBlend = 0;
+    this.aim.release();
+    this.syncEye();
+    this.previousEye.copy(this.eye);
     this.state = 'playing';
     this.ui.hideAll();
     this.requestLock();
+  }
+
+  private die(): void {
+    this.state = 'dead';
+    this.aim.release();
+    this.ui.showDeath(this.run.distance, this.run.time);
+    this.exitLock();
   }
 
   private pause(): void {

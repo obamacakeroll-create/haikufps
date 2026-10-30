@@ -28,19 +28,6 @@ export function roughen(geometry: BufferGeometry, noise: Noise, amount: number, 
   geometry.computeVertexNormals();
 }
 
-/** Lifts vertices vertically by noise. Used for ground, where radial pushes would tilt it. */
-export function displaceHeight(geometry: BufferGeometry, noise: Noise, amplitude: number, frequency: number): void {
-  const position = geometry.getAttribute('position');
-  for (let i = 0; i < position.count; i++) {
-    const x = position.getX(i);
-    const y = position.getY(i);
-    const z = position.getZ(i);
-    position.setY(i, y + noise.fbm(x * frequency, 0, z * frequency, 3) * amplitude);
-  }
-  position.needsUpdate = true;
-  geometry.computeVertexNormals();
-}
-
 /** Writes a color attribute. Each band is picked by height with a noise wobble, so layers look hand-painted. */
 export function paintStrata(
   geometry: BufferGeometry,
@@ -78,13 +65,24 @@ export function paintNoise(geometry: BufferGeometry, from: Color, to: Color, noi
   geometry.setAttribute('color', new BufferAttribute(colors, 3));
 }
 
-/** Rounded, roughened slab for canyon walls and ledges. Smooth normals, centered on the origin. */
-export function buildSlab(noise: Noise, width: number, height: number, depth: number, segments: number): BufferGeometry {
+/**
+ * Roughened slab for canyon walls and ledges. Smooth normals, centered on the origin.
+ * `roughness` scales how far faces wander, as a fraction of the smallest dimension. Use less for
+ * surfaces the player stands on, so the drawn top stays close to its collision box.
+ */
+export function buildSlab(
+  noise: Noise,
+  width: number,
+  height: number,
+  depth: number,
+  segments: number,
+  roughness = 0.12,
+): BufferGeometry {
   const box = new BoxGeometry(width, height, depth, segments, segments * 2, segments);
   box.deleteAttribute('normal');
   box.deleteAttribute('uv');
   const geometry = mergeVertices(box);
-  roughen(geometry, noise, Math.min(width, height, depth) * 0.12, 0.45);
+  roughen(geometry, noise, Math.min(width, height, depth) * roughness, 0.45);
   return geometry;
 }
 
@@ -101,10 +99,40 @@ export function buildRock(noise: Noise, radius: number, detail: number): BufferG
   return faceted;
 }
 
-/** Ground plane in the XZ plane, with noise lifting it and a UV layout for the mottle texture. */
-export function buildFloor(noise: Noise, width: number, depth: number, segmentsX: number, segmentsZ: number): BufferGeometry {
+export interface FloorOptions {
+  width: number;
+  depth: number;
+  segmentsX: number;
+  segmentsZ: number;
+  /** Z of the floor's center in world space. Noise is sampled in world space, so neighbouring tiles join. */
+  centerZ?: number;
+  /** Ground within this distance of the center line stays flat, so it matches the collision plane. */
+  flatHalfWidth?: number;
+}
+
+/**
+ * Ground plane in the XZ plane. Noise lifts it away from the flat lane, and the UV layout
+ * feeds the mottle texture.
+ */
+export function buildFloor(noise: Noise, options: FloorOptions): BufferGeometry {
+  const { width, depth, segmentsX, segmentsZ, centerZ = 0, flatHalfWidth = 0 } = options;
   const geometry = new PlaneGeometry(width, depth, segmentsX, segmentsZ);
   geometry.rotateX(-Math.PI / 2);
-  displaceHeight(geometry, noise, 0.6, 0.12);
+  geometry.translate(0, 0, centerZ);
+
+  const position = geometry.getAttribute('position');
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const z = position.getZ(i);
+    const edge = smoothstep(flatHalfWidth, flatHalfWidth + 5, Math.abs(x));
+    position.setY(i, position.getY(i) + noise.fbm(x * 0.12, 0, z * 0.12, 3) * 0.6 * edge);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
   return geometry;
+}
+
+function smoothstep(edge0: number, edge1: number, value: number): number {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
 }

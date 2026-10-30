@@ -154,6 +154,98 @@ canvas.game {
   border-left: 3px solid var(--teal);
 }
 
+.death-screen {
+  background: rgba(11, 12, 16, 0.82);
+  cursor: pointer;
+}
+
+.death-stats {
+  margin: 0;
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--paper);
+}
+
+.hud {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hud-distance {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  margin: 0;
+  transform: translateX(-50%);
+  font-family: 'Bebas Neue', Impact, sans-serif;
+  font-size: 2.4rem;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 3px 3px 0 var(--vermilion);
+}
+
+.hud-side {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  width: min(280px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.hud-meter {
+  display: grid;
+  grid-template-columns: 3.2rem 1fr 4rem;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.75rem;
+}
+
+.hud-label {
+  color: var(--paper-dim);
+  letter-spacing: 0.12em;
+}
+
+.hud-track {
+  height: 8px;
+  background: rgba(239, 231, 214, 0.15);
+}
+
+.hud-fill {
+  height: 100%;
+  width: 100%;
+}
+
+.hud-fill-tide {
+  background: var(--teal);
+}
+
+.hud-fill-tide.is-danger {
+  background: var(--vermilion);
+}
+
+.hud-fill-fuel {
+  background: var(--paper);
+}
+
+.hud-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-dash {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  color: var(--paper-dim);
+}
+
+.hud-dash.is-ready {
+  color: var(--teal);
+}
+
 @keyframes blink {
   to {
     visibility: hidden;

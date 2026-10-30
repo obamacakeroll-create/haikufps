@@ -54,7 +54,7 @@ describe('procedural geometry', () => {
   });
 
   it('lifts the floor by noise without leaving it flat', () => {
-    const geometry = buildFloor(noise, 40, 40, 10, 10);
+    const geometry = buildFloor(noise, { width: 40, depth: 40, segmentsX: 10, segmentsZ: 10 });
     const y = geometry.getAttribute('position');
     let min = Infinity;
     let max = -Infinity;
@@ -63,6 +63,23 @@ describe('procedural geometry', () => {
       max = Math.max(max, y.getY(i));
     }
     expect(max - min).toBeGreaterThan(0.01);
+  });
+
+  it('keeps the flat lane at ground level and places the floor at its center', () => {
+    const geometry = buildFloor(noise, {
+      width: 40,
+      depth: 40,
+      segmentsX: 40,
+      segmentsZ: 20,
+      centerZ: -100,
+      flatHalfWidth: 7,
+    });
+    const position = geometry.getAttribute('position');
+    for (let i = 0; i < position.count; i++) {
+      if (Math.abs(position.getX(i)) <= 7) expect(position.getY(i)).toBeCloseTo(0, 9);
+    }
+    const zs = Array.from({ length: position.count }, (_, i) => position.getZ(i));
+    expect((Math.min(...zs) + Math.max(...zs)) / 2).toBeCloseTo(-100);
   });
 
   it('paints strata with palette colors', () => {
