@@ -14,22 +14,24 @@ import { createRng } from '../core/rng';
 import { SAVE_VERSION, loadSave, writeSave } from '../core/save';
 import { type Settings } from '../core/settings';
 import { browserStore, type KeyValueStore } from '../core/storage';
+import { type WeaponId } from '../combat/weapons';
 import type { Action } from '../input/actions';
 import { AimState } from '../input/aim';
 import { GamepadSource } from '../input/gamepad';
 import { type Controls, InputManager, type InputEvents } from '../input/input';
 import { KeyboardMouseSource } from '../input/keyboard-mouse';
 import { BODY } from '../player/movement';
-import { createMottleTexture, createPaperTexture } from '../procgen/textures';
+import { createMottleTexture, createPaperTexture, createSplatTexture } from '../procgen/textures';
 import { createLighting, SUN_DIRECTION, type Lighting } from '../render/lighting';
 import { BEAUTY_ONLY_LAYER } from '../render/layers';
 import { PALETTE } from '../render/palette';
 import { RenderPipeline } from '../render/pipeline';
 import { createSky, type Sky } from '../render/sky';
 import { createToonRamp } from '../render/toon';
+import { Viewmodel } from '../render/viewmodel';
 import { Hud } from '../ui/hud';
 import { Ui } from '../ui/ui';
-import { Run, type RunAssets } from './run';
+import { Run, type RunAssets, type RunCause } from './run';
 
 type GameState = 'title' | 'playing' | 'paused' | 'dead';
 
@@ -40,9 +42,28 @@ const ADS_ZOOM = 0.62;
 const ADS_MOVE_SCALE = 0.85;
 /** Camera shake in radians while the canyon is reshaping. */
 const RESHAPE_SHAKE = 0.012;
+/** Camera shake in radians when the player takes damage. */
+const HURT_SHAKE = 0.02;
+const KICK_DECAY = 10;
+const HURT_SHAKE_DECAY = 6;
+/** Seconds after death before input can restart. Stops a held button from restarting at once. */
+const DEATH_DELAY = 0.6;
 const MAX_PIXEL_RATIO = 1.5;
 const START_ACTIONS: readonly Action[] = ['confirm', 'fire', 'jump', 'dash', 'reload', 'aim', 'pause', 'back'];
-const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', 'weapon1', 'weapon2', 'weapon3'];
+const WEAPON_KEYS: readonly Action[] = ['weapon1', 'weapon2', 'weapon3'];
+const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', ...WEAPON_KEYS];
+/** How each shot feels: camera kick in radians, gun kick from 0 to 1, and rumble. */
+const SHOT_FEEL: Readonly<
+  Record<WeaponId, { pitch: number; gun: number; rumble: readonly [strong: number, weak: number, ms: number] }>
+> = {
+  rifle: { pitch: 0.006, gun: 0.25, rumble: [0.08, 0.15, 40] },
+  scatter: { pitch: 0.035, gun: 1, rumble: [0.5, 0.4, 120] },
+  bomb: { pitch: 0.02, gun: 0.6, rumble: [0.25, 0.3, 90] },
+};
+const CAUSE_TITLE: Readonly<Record<RunCause, string>> = {
+  tide: 'The tide caught you',
+  overrun: 'Overrun',
+};
 
 export class Game {
   private readonly canvas: HTMLCanvasElement;
@@ -52,6 +73,7 @@ export class Game {
   private readonly pipeline: RenderPipeline;
   private readonly sky: Sky;
   private readonly lighting: Lighting;
+  private readonly viewmodel: Viewmodel;
   private readonly assets: RunAssets;
   private readonly hud: Hud;
   private readonly store: KeyValueStore = browserStore();
@@ -71,6 +93,11 @@ export class Game {
   private yaw = 0;
   private pitch = 0;
   private adsBlend = 0;
+  /** Pitch kick from the last shot, fading back to zero. */
+  private kick = 0;
+  /** Hurt shake, from 1 when the player takes damage, fading to zero. */
+  private hurtShake = 0;
+  private deadTime = 0;
   private elapsed = 0;
 
   constructor(root: HTMLElement) {
@@ -89,7 +116,7 @@ export class Game {
     const ramp = createToonRamp();
     const mottle = createMottleTexture(rng);
     const paper = createPaperTexture(rng);
-    this.assets = { ramp, mottle };
+    this.assets = { ramp, mottle, splat: createSplatTexture(rng) };
 
     this.scene.background = null;
     this.scene.fog = new Fog(PALETTE.fog, 40, 240);
@@ -97,6 +124,10 @@ export class Game {
     this.scene.add(this.sky.mesh);
     this.lighting = createLighting(this.scene);
     this.camera.layers.enable(BEAUTY_ONLY_LAYER);
+    // The camera sits in the scene so the held weapon, which is parented to it, is drawn.
+    this.viewmodel = new Viewmodel(ramp);
+    this.camera.add(this.viewmodel.root);
+    this.scene.add(this.camera);
     this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, paper);
     this.run = this.createRun();
 
@@ -155,7 +186,7 @@ export class Game {
         if (this.ui.updatePaused(controls) === 'resume') this.resume();
         break;
       case 'dead':
-        this.updateDead(controls);
+        this.updateDead(controls, dt);
         break;
     }
   }
@@ -165,6 +196,8 @@ export class Game {
       this.pause();
       return;
     }
+    const weaponIndex = WEAPON_KEYS.findIndex((action) => controls.pressed(action));
+    const weaponStep = stepFrom(controls);
     if (WEAPON_ACTIONS.some((action) => controls.pressed(action))) this.aim.release();
 
     const aiming = this.aim.update(controls.held('aim'), controls.pressed('aim'));
@@ -176,6 +209,8 @@ export class Game {
     const forwardZ = -Math.cos(this.yaw);
     const rightX = Math.cos(this.yaw);
     const rightZ = Math.sin(this.yaw);
+    // The aim is the camera's forward vector, so shots land where the reticle is.
+    const pitchCos = Math.cos(this.pitch);
     this.run.update(dt, {
       wishX: forwardX * controls.move.y + rightX * controls.move.x,
       wishZ: forwardZ * controls.move.y + rightZ * controls.move.x,
@@ -185,14 +220,30 @@ export class Game {
       jumpPressed: controls.pressed('jump'),
       jumpHeld: controls.held('jump'),
       dashPressed: controls.pressed('dash'),
+      fireHeld: controls.held('fire'),
+      firePressed: controls.pressed('fire'),
+      reloadPressed: controls.pressed('reload'),
+      weaponIndex,
+      weaponStep,
+      aiming,
+      aimX: forwardX * pitchCos,
+      aimY: Math.sin(this.pitch),
+      aimZ: forwardZ * pitchCos,
     });
     this.syncEye();
 
     this.adsBlend += ((aiming ? 1 : 0) - this.adsBlend) * Math.min(1, dt * 14);
+    const { arsenal } = this.run.combat;
+    this.viewmodel.select(arsenal.index);
+    this.viewmodel.update(dt, this.adsBlend, arsenal.reloadProgress);
+    this.kick = Math.max(0, this.kick - KICK_DECAY * dt);
+    this.hurtShake = Math.max(0, this.hurtShake - HURT_SHAKE_DECAY * dt);
     if (this.run.status === 'over') this.die();
   }
 
-  private updateDead(controls: Controls): void {
+  private updateDead(controls: Controls, dt: number): void {
+    this.deadTime += dt;
+    if (this.deadTime < DEATH_DELAY) return;
     switch (this.ui.updateDeath(controls)) {
       case 'retry':
         this.retry();
@@ -206,7 +257,7 @@ export class Game {
   }
 
   private render(alpha: number): void {
-    this.run.present(this.settings.reducedMotion);
+    this.run.present(alpha, this.settings.reducedMotion);
     this.updateCamera(alpha);
     this.sky.mesh.position.copy(this.camera.position);
     this.sky.setTime(this.elapsed);
@@ -214,18 +265,27 @@ export class Game {
 
     const playing = this.state === 'playing';
     this.hud.setVisible(playing);
-    if (playing) {
-      this.hud.update({
-        distance: this.run.distance,
-        gap: this.run.gap,
-        fuel: this.run.body.fuel,
-        dashReady: this.run.body.dashCooldown <= 0,
-        warning: this.reshapeWarning(),
-      });
-    }
+    if (playing) this.updateHud();
 
     this.pipeline.render();
     if (this.ui.debugVisible) this.ui.setDebugText(this.debugText());
+  }
+
+  private updateHud(): void {
+    const { body, combat } = this.run;
+    this.hud.update({
+      distance: this.run.distance,
+      gap: this.run.gap,
+      fuel: body.fuel,
+      dashReady: body.dashCooldown <= 0,
+      warning: this.reshapeWarning(),
+      health: this.run.health.fraction,
+      weaponIndex: combat.arsenal.index,
+      ammo: combat.arsenal.ammo,
+      reloading: combat.arsenal.reloading,
+      kills: combat.kills,
+      aiming: this.aim.active,
+    });
   }
 
   private updateCamera(alpha: number): void {
@@ -236,12 +296,15 @@ export class Game {
     }
     this.camera.position.lerpVectors(this.previousEye, this.eye, alpha);
 
-    // Reduced motion turns the shudder off entirely.
-    const shake = this.run.reshapePhase !== 'idle' && !this.settings.reducedMotion ? RESHAPE_SHAKE : 0;
+    // Reduced motion turns every shake and kick off.
+    const calm = this.settings.reducedMotion;
+    const reshaping = this.run.reshapePhase !== 'idle' && !calm ? RESHAPE_SHAKE : 0;
+    const hurt = calm ? 0 : this.hurtShake * HURT_SHAKE;
+    const kick = calm ? 0 : this.kick;
     const shudder = this.elapsed * 60;
     this.camera.rotation.set(
-      this.pitch + Math.sin(shudder) * shake,
-      -this.yaw + Math.cos(shudder * 0.7) * shake,
+      this.pitch + kick + Math.sin(shudder) * reshaping + Math.sin(this.elapsed * 90) * hurt,
+      -this.yaw + Math.cos(shudder * 0.7) * reshaping + Math.cos(this.elapsed * 75) * hurt,
       0,
       'YXZ',
     );
@@ -257,6 +320,26 @@ export class Game {
     // A soft pulse when the zone is marked, and a firmer one when the walls start to move.
     run.reshaper.events.on('telegraph', () => this.gamepad.rumble(0.2, 0.45, 700));
     run.reshaper.events.on('move', () => this.gamepad.rumble(0.55, 0.9, 900));
+
+    const { events } = run.combat;
+    events.on('shot', ({ weapon }) => {
+      const feel = SHOT_FEEL[weapon];
+      this.viewmodel.kick(feel.gun);
+      if (!this.settings.reducedMotion) this.kick = Math.max(this.kick, feel.pitch);
+      this.gamepad.rumble(feel.rumble[0], feel.rumble[1], feel.rumble[2]);
+    });
+    events.on('hit', ({ kill }) => {
+      this.hud.hit(kill);
+      if (kill) this.gamepad.rumble(0.35, 0.5, 120);
+      else this.gamepad.rumble(0.12, 0.25, 50);
+    });
+    events.on('hurt', () => {
+      this.hud.hurt();
+      this.hurtShake = 1;
+      this.gamepad.rumble(0.9, 0.5, 220);
+    });
+    events.on('blast', () => this.gamepad.rumble(0.6, 0.6, 200));
+    events.on('reveal', () => this.gamepad.rumble(0.7, 0.4, 260));
     return run;
   }
 
@@ -273,8 +356,10 @@ export class Game {
 
   private debugText(): string {
     const { calls, triangles } = this.renderer.info.render;
-    const { body } = this.run;
+    const { body, combat } = this.run;
     const dash = body.dashCooldown > 0 ? `${body.dashCooldown.toFixed(1)} s` : 'ready';
+    const { arsenal } = combat;
+    const reload = arsenal.reloading ? ' (reloading)' : '';
     return [
       `fps ${this.loop.stats.fps.toFixed(0)}   frame ${this.loop.stats.frameMs.toFixed(1)} ms`,
       `draw calls ${calls}   triangles ${triangles}   sections ${this.run.loadedSections}`,
@@ -284,6 +369,8 @@ export class Game {
       `speed ${this.run.forwardSpeed.toFixed(1)}   pace ${this.run.pace.toFixed(1)}   gap ${this.run.gap.toFixed(1)} m`,
       `pos ${body.x.toFixed(1)} ${body.y.toFixed(1)} ${body.z.toFixed(1)}   ${body.grounded ? 'ground' : 'air'}`,
       `fuel ${(body.fuel * 100).toFixed(0)}%   dash ${dash}`,
+      `hp ${this.run.health.current.toFixed(0)}   enemies ${combat.enemyCount}   kills ${combat.kills}`,
+      `weapon ${arsenal.weapon.name}   ammo ${arsenal.ammo}${reload}`,
       `reshape ${this.run.reshapePhase}`,
     ].join('\n');
   }
@@ -304,6 +391,8 @@ export class Game {
     this.yaw = 0;
     this.pitch = 0;
     this.adsBlend = 0;
+    this.kick = 0;
+    this.hurtShake = 0;
     this.aim.release();
     this.syncEye();
     this.previousEye.copy(this.eye);
@@ -314,8 +403,14 @@ export class Game {
 
   private die(): void {
     this.state = 'dead';
+    this.deadTime = 0;
     this.aim.release();
-    this.ui.showDeath(this.run.distance, this.run.time);
+    this.ui.showDeath({
+      title: CAUSE_TITLE[this.run.cause ?? 'tide'],
+      distance: this.run.distance,
+      seconds: this.run.time,
+      kills: this.run.combat.kills,
+    });
     this.exitLock();
   }
 
@@ -366,4 +461,11 @@ export class Game {
     this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
   };
+}
+
+/** +1 for the next weapon, -1 for the previous, 0 for neither pressed this step. */
+function stepFrom(controls: Controls): number {
+  if (controls.pressed('weaponNext')) return 1;
+  if (controls.pressed('weaponPrev')) return -1;
+  return 0;
 }

@@ -1,10 +1,10 @@
-import { Scene, Texture } from 'three';
+import { Scene } from 'three';
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../src/core/rng';
-import { Run } from '../src/game/run';
-import { BODY, type Intent } from '../src/player/movement';
+import { Run, type RunInput } from '../src/game/run';
+import { BODY } from '../src/player/movement';
 import { separateCapsule, type Box } from '../src/world/collision';
-import { createToonRamp } from '../src/render/toon';
+import { QUIET, runAssets } from './support';
 
 /**
  * A reshape moves a wall by up to a few centimeters per frame, so a body can end a frame that
@@ -18,11 +18,12 @@ describe('movement against the canyon walls', () => {
     const nearby: Box[] = [];
     for (let seed = 1; seed <= 40; seed++) {
       const rng = createRng(seed * 13);
-      const run = new Run(new Scene(), { ramp: createToonRamp(), mottle: new Texture() }, seed);
+      const run = new Run(new Scene(), runAssets(), seed);
       let strafe = 0;
       for (let i = 0; i < 60 * 25 && run.status === 'running'; i++) {
         if (i % 30 === 0) strafe = rng.pick([-1, 0, 1]);
-        const intent: Intent = {
+        const intent: RunInput = {
+          ...QUIET,
           wishX: strafe,
           wishZ: -1,
           speedScale: 1,
@@ -33,7 +34,7 @@ describe('movement against the canyon walls', () => {
           dashPressed: i % 120 === 0,
         };
         run.update(1 / 60, intent);
-        run.present(false);
+        run.present(1, false);
 
         const { x, y, z } = run.body;
         for (const box of run.collidersNear(nearby)) {

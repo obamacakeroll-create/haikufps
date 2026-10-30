@@ -1,13 +1,13 @@
-import { Scene, Texture } from 'three';
+import { Scene } from 'three';
 import { describe, expect, it } from 'vitest';
-import { Run } from '../src/game/run';
+import { Run, type RunInput } from '../src/game/run';
 import { TIDE } from '../src/game/tide';
-import { type Intent } from '../src/player/movement';
-import { createToonRamp } from '../src/render/toon';
+import { QUIET, runAssets } from './support';
 
 const DT = 1 / 60;
 
-const idle: Intent = {
+const idle: RunInput = {
+  ...QUIET,
   wishX: 0,
   wishZ: 0,
   speedScale: 1,
@@ -19,10 +19,10 @@ const idle: Intent = {
 };
 
 function makeRun(seed: number): Run {
-  return new Run(new Scene(), { ramp: createToonRamp(), mottle: new Texture() }, seed);
+  return new Run(new Scene(), runAssets(), seed);
 }
 
-function simulate(run: Run, seconds: number, intent: Intent): void {
+function simulate(run: Run, seconds: number, intent: RunInput): void {
   const steps = Math.round(seconds / DT);
   for (let i = 0; i < steps && run.status === 'running'; i++) run.update(DT, intent);
 }

@@ -64,3 +64,42 @@ export function createMottleTexture(rng: Rng, size = 512): Texture {
   texture.wrapT = RepeatWrapping;
   return texture;
 }
+
+/**
+ * Ink splat: a ragged blob with a few satellite drops. White on alpha, so the material's color sets
+ * the ink and one texture serves every splat.
+ */
+export function createSplatTexture(rng: Rng, size = 128): Texture {
+  const { canvas, ctx } = canvasContext(size);
+  const center = size / 2;
+  const base = size * 0.3;
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  const steps = 36;
+  for (let i = 0; i <= steps; i++) {
+    const angle = (i / steps) * Math.PI * 2;
+    const radius = base * rng.range(0.7, 1.15);
+    const x = center + Math.cos(angle) * radius;
+    const y = center + Math.sin(angle) * radius;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+
+  for (let i = 0; i < 7; i++) {
+    const angle = rng.range(0, Math.PI * 2);
+    const distance = base * rng.range(1.0, 1.5);
+    ctx.beginPath();
+    ctx.arc(
+      center + Math.cos(angle) * distance,
+      center + Math.sin(angle) * distance,
+      rng.range(size * 0.012, size * 0.03),
+      0,
+      Math.PI * 2,
+    );
+    ctx.fill();
+  }
+
+  return new CanvasTexture(canvas);
+}

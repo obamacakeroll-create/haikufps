@@ -3,6 +3,8 @@ import { createRng } from '../core/rng';
 import { createNoise } from '../procgen/noise';
 import { PALETTE } from '../render/palette';
 import { createToonMaterial } from '../render/toon';
+import { Combat, type CombatInput } from '../combat/combat';
+import { Health } from '../player/health';
 import { createBody, stepBody, type Body, type Intent } from '../player/movement';
 import { type Box } from '../world/collision';
 import { Canyon } from '../world/canyon';
@@ -15,9 +17,15 @@ import { stepGap, TIDE } from './tide';
 export interface RunAssets {
   ramp: DataTexture;
   mottle: Texture;
+  splat: Texture;
 }
 
 export type RunStatus = 'running' | 'over';
+/** Why a run ended: the tide reached the player, or enemies wore their health down. */
+export type RunCause = 'tide' | 'overrun';
+
+/** One simulation step of player input: movement and combat. */
+export type RunInput = Intent & CombatInput;
 
 /** Radius around the player in which canyon colliders are gathered. Covers one dash step with margin. */
 const COLLIDE_RADIUS = 3;
@@ -25,8 +33,8 @@ const COLLIDE_RADIUS = 3;
 const SPEED_SMOOTHING = 8;
 
 /**
- * One endless run: the player, the canyon they run through, and the tide that chases them.
- * The seed fixes the canyon, so a run can be replayed exactly later.
+ * One endless run: the player, the canyon they run through, the tide that chases them, and the
+ * enemies that try to stop them. The seed fixes the canyon and the spawns, so a run can be replayed.
  */
 export class Run {
   readonly body: Body = createBody(0, 0, 0);
@@ -36,6 +44,8 @@ export class Run {
   private readonly glow: ReshapeGlow;
   /** Subscribe to `reshaper.events` to react to telegraphs and moves, such as rumble or HUD warnings. */
   readonly reshaper: Reshaper;
+  readonly health = new Health();
+  readonly combat: Combat;
   private readonly boxes: Box[] = [];
   private previousZ = 0;
   private forwardSpeedValue = 0;
@@ -43,6 +53,7 @@ export class Run {
   private distanceValue = 0;
   private timeValue = 0;
   private statusValue: RunStatus = 'running';
+  private causeValue: RunCause | undefined;
 
   constructor(
     private readonly scene: Scene,
@@ -63,6 +74,18 @@ export class Run {
     scene.add(this.glow.mesh);
     this.reshaper.events.on('telegraph', (zone) => this.glow.show(zone));
     this.reshaper.events.on('settle', () => this.glow.hide());
+
+    this.combat = new Combat(
+      scene,
+      this.canyon,
+      this.body,
+      this.health,
+      createNoise(seed ^ 0x51ab),
+      createRng(seed ^ 0x2f1d),
+      { ramp: assets.ramp, splat: assets.splat },
+    );
+    // A reshape that moves a mimic's zone shows it, so the player learns that walls can hide enemies.
+    this.reshaper.events.on('move', ({ zone }) => this.combat.reveal(zone));
   }
 
   get reshapePhase(): ReshapePhase {
@@ -71,6 +94,11 @@ export class Run {
 
   get status(): RunStatus {
     return this.statusValue;
+  }
+
+  /** Set once the run is over. */
+  get cause(): RunCause | undefined {
+    return this.causeValue;
   }
 
   /** Meters run so far. Taken from the farthest point reached, so backtracking does not lower it. */
@@ -101,11 +129,12 @@ export class Run {
     return this.canyon.loadedSections;
   }
 
-  update(dt: number, intent: Intent): void {
+  update(dt: number, input: RunInput): void {
     if (this.statusValue !== 'running') return;
     this.timeValue += dt;
 
-    stepBody(this.body, intent, dt, this.canyon.boxesNear(this.body.z, COLLIDE_RADIUS, this.boxes));
+    stepBody(this.body, input, dt, this.canyon.boxesNear(this.body.z, COLLIDE_RADIUS, this.boxes));
+    this.health.update(dt);
 
     const instantSpeed = (this.previousZ - this.body.z) / dt;
     this.previousZ = this.body.z;
@@ -118,8 +147,10 @@ export class Run {
     this.canyon.update(this.body.z);
     this.reshaper.update(dt, this.timeValue, this.body.z, this.canyon);
     this.wave.update(this.body.z + this.gapValue, this.timeValue);
+    this.combat.update(dt, input);
 
-    if (this.gapValue <= 0) this.statusValue = 'over';
+    if (this.gapValue <= 0) this.end('tide');
+    else if (this.health.dead) this.end('overrun');
   }
 
   /** Fills `out` with the colliders near the player. Exposed for tests and debugging. */
@@ -127,18 +158,28 @@ export class Run {
     return this.canyon.boxesNear(this.body.z, COLLIDE_RADIUS, out);
   }
 
-  /** Render-side work: pulses the telegraph and writes any moved slots to the GPU. Call once per frame. */
-  present(reducedMotion: boolean): void {
+  /**
+   * Render-side work: pulses the telegraph, writes moved slots and enemies to the GPU. `alpha` is how
+   * far the render sits between the last two simulation steps. Call once per frame.
+   */
+  present(alpha: number, reducedMotion: boolean): void {
     this.glow.update(this.reshaper.phase, this.reshaper.progress, this.timeValue, reducedMotion);
     this.canyon.flush();
+    this.combat.present(alpha);
   }
 
   dispose(): void {
+    this.combat.dispose();
     this.scene.remove(this.wave.mesh);
     this.wave.dispose();
     this.waveMaterial.dispose();
     this.scene.remove(this.glow.mesh);
     this.glow.dispose();
     this.canyon.dispose();
+  }
+
+  private end(cause: RunCause): void {
+    this.statusValue = 'over';
+    this.causeValue = cause;
   }
 }

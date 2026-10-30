@@ -24,6 +24,8 @@ export const MOVE = {
   dashSpeed: 26,
   dashTime: 0.18,
   dashCooldown: 0.8,
+  /** How quickly shoves fade, per second. */
+  knockDecay: 4,
   /** Limit on lateral movement. Walls stop the player well before this. */
   xLimit: 8,
   /** Longest sub-step, so a fast body cannot skip over a thin wall. */
@@ -48,6 +50,9 @@ export interface Body {
   dashCooldown: number;
   dashX: number;
   dashZ: number;
+  /** Horizontal shove from blasts and recoil. It fades on its own and does not count toward walking. */
+  kx: number;
+  kz: number;
 }
 
 export interface Intent {
@@ -79,6 +84,8 @@ export function createBody(x: number, y: number, z: number): Body {
     dashCooldown: 0,
     dashX: 0,
     dashZ: 0,
+    kx: 0,
+    kz: 0,
   };
 }
 
@@ -103,6 +110,9 @@ function startDash(body: Body, intent: Intent): void {
 /** One simulation step of player movement. Mutates `body` in place. */
 export function stepBody(body: Body, intent: Intent, dt: number, boxes: readonly Box[]): void {
   body.dashCooldown = Math.max(0, body.dashCooldown - dt);
+  const knockFade = Math.exp(-MOVE.knockDecay * dt);
+  body.kx *= knockFade;
+  body.kz *= knockFade;
   if (intent.dashPressed && body.dashCooldown <= 0 && body.dashTime <= 0) startDash(body, intent);
 
   let standing = body.grounded;
@@ -145,9 +155,9 @@ export function stepBody(body: Body, intent: Intent, dt: number, boxes: readonly
   standing = false;
 
   for (let step = 0; step < steps; step++) {
-    body.x += body.vx * h;
+    body.x += (body.vx + body.kx) * h;
     body.y += body.vy * h;
-    body.z += body.vz * h;
+    body.z += (body.vz + body.kz) * h;
 
     if (body.y < 0) {
       body.y = 0;
@@ -173,11 +183,29 @@ export function stepBody(body: Body, intent: Intent, dt: number, boxes: readonly
   body.grounded = standing;
 }
 
-/** Removes the velocity component that pushes into a surface, so the body slides along it. */
+/**
+ * Adds a shove: horizontal parts go into the fading knock, and a vertical push adds to the fall
+ * speed, so a blast below the player can launch them.
+ */
+export function shove(body: Body, x: number, y: number, z: number): void {
+  body.kx += x;
+  body.kz += z;
+  body.vy += y;
+  if (y > 0) body.grounded = false;
+}
+
+/** Removes the velocity that pushes into a surface, so the body slides along it. */
 function slide(body: Body, normal: Contact): void {
   const into = body.vx * normal.nx + body.vy * normal.ny + body.vz * normal.nz;
-  if (into >= 0) return;
-  body.vx -= normal.nx * into;
-  body.vy -= normal.ny * into;
-  body.vz -= normal.nz * into;
+  if (into < 0) {
+    body.vx -= normal.nx * into;
+    body.vy -= normal.ny * into;
+    body.vz -= normal.nz * into;
+  }
+  // Shoves are cut the same way, so a blast cannot drive the body through a wall.
+  const shoved = body.kx * normal.nx + body.kz * normal.nz;
+  if (shoved < 0) {
+    body.kx -= normal.nx * shoved;
+    body.kz -= normal.nz * shoved;
+  }
 }

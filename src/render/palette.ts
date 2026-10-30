@@ -20,4 +20,11 @@ export const PALETTE = {
   ],
   vermilion: hex('#ff5a36'),
   teal: hex('#3cc4b0'),
+  enemy: {
+    swarmling: hex('#5a4766'),
+    brute: hex('#6b3a5e'),
+    spitter: hex('#3cc4b0'),
+    diver: hex('#ff5a36'),
+    mimic: hex('#b5583a'),
+  },
 } as const;

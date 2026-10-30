@@ -2,6 +2,14 @@ import { clampNumeric, type NumericKey, type Settings } from '../core/settings';
 import type { Controls } from '../input/input';
 import { Menu, type MenuRow } from './menu';
 
+/** What the death screen shows. */
+export interface DeathReport {
+  title: string;
+  distance: number;
+  seconds: number;
+  kills: number;
+}
+
 export interface UiHandlers {
   onStart(): void;
   onRetry(): void;
@@ -32,6 +40,7 @@ export class Ui {
   private readonly titleScreen: HTMLElement;
   private readonly pauseScreen: HTMLElement;
   private readonly deathScreen: HTMLElement;
+  private readonly deathTitle: HTMLElement;
   private readonly deathStats: HTMLElement;
   private readonly debugPanel: HTMLElement;
   private readonly mainMenu: Menu;
@@ -66,10 +75,11 @@ export class Ui {
       this.optionsMenu.element,
     );
 
+    this.deathTitle = element('h2', 'heading', 'The tide caught you');
     this.deathStats = element('p', 'death-stats');
     this.deathScreen = element('section', 'screen death-screen');
     this.deathScreen.append(
-      element('h2', 'heading', 'The tide caught you'),
+      this.deathTitle,
       this.deathStats,
       element('p', 'prompt', 'Jump or click to run again'),
       element('p', 'hint', 'Pause or back for the title'),
@@ -107,11 +117,12 @@ export class Ui {
     this.showView('main');
   }
 
-  showDeath(distance: number, seconds: number): void {
+  showDeath(report: DeathReport): void {
     this.hideAll();
-    const minutes = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
-    this.deathStats.textContent = `${Math.floor(distance)} m in ${minutes}:${secs}`;
+    const minutes = Math.floor(report.seconds / 60);
+    const secs = Math.floor(report.seconds % 60).toString().padStart(2, '0');
+    this.deathTitle.textContent = report.title;
+    this.deathStats.textContent = `${Math.floor(report.distance)} m in ${minutes}:${secs}  |  ${report.kills} kills`;
     this.deathScreen.hidden = false;
   }
 
