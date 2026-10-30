@@ -5,6 +5,8 @@ export interface HudState {
   gap: number;
   fuel: number;
   dashReady: boolean;
+  /** Warning text for the current reshape phase. Empty when there is nothing to warn about. */
+  warning: string;
 }
 
 /** Gap below this many meters turns the tide meter into a warning. */
@@ -35,12 +37,14 @@ export class Hud {
   private readonly tide: ReturnType<typeof bar>;
   private readonly fuel: ReturnType<typeof bar>;
   private readonly dash: HTMLElement;
+  private readonly warning: HTMLElement;
 
   constructor(parent: HTMLElement) {
     this.root = element('section', 'hud');
     this.root.hidden = true;
 
     this.distance = element('p', 'hud-distance');
+    this.warning = element('p', 'hud-warning');
     this.tide = bar('TIDE', 'hud-fill-tide');
     this.fuel = bar('JET', 'hud-fill-fuel');
     this.dash = element('p', 'hud-dash');
@@ -48,7 +52,7 @@ export class Hud {
 
     const side = element('div', 'hud-side');
     side.append(this.tide.row, this.fuel.row, this.dash);
-    this.root.append(this.distance, side);
+    this.root.append(this.distance, this.warning, side);
     parent.append(this.root);
   }
 
@@ -67,5 +71,8 @@ export class Hud {
     this.fuel.value.textContent = `${Math.round(state.fuel * 100)}%`;
 
     this.dash.classList.toggle('is-ready', state.dashReady);
+
+    this.warning.textContent = state.warning;
+    this.warning.hidden = state.warning === '';
   }
 }

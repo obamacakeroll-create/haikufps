@@ -8,6 +8,7 @@ import {
   WebGLRenderer,
 } from 'three';
 import { Emitter } from '../core/events';
+import { clamp } from '../core/math';
 import { createLoop, type Loop } from '../core/loop';
 import { createRng } from '../core/rng';
 import { SAVE_VERSION, loadSave, writeSave } from '../core/save';
@@ -21,7 +22,7 @@ import { KeyboardMouseSource } from '../input/keyboard-mouse';
 import { BODY } from '../player/movement';
 import { createMottleTexture, createPaperTexture } from '../procgen/textures';
 import { createLighting, SUN_DIRECTION, type Lighting } from '../render/lighting';
-import { SKY_LAYER } from '../render/layers';
+import { BEAUTY_ONLY_LAYER } from '../render/layers';
 import { PALETTE } from '../render/palette';
 import { RenderPipeline } from '../render/pipeline';
 import { createSky, type Sky } from '../render/sky';
@@ -37,13 +38,11 @@ const PITCH_LIMIT = 1.5;
 const ADS_SENSITIVITY = 0.55;
 const ADS_ZOOM = 0.62;
 const ADS_MOVE_SCALE = 0.85;
+/** Camera shake in radians while the canyon is reshaping. */
+const RESHAPE_SHAKE = 0.012;
 const MAX_PIXEL_RATIO = 1.5;
 const START_ACTIONS: readonly Action[] = ['confirm', 'fire', 'jump', 'dash', 'reload', 'aim', 'pause', 'back'];
 const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', 'weapon1', 'weapon2', 'weapon3'];
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
 
 export class Game {
   private readonly canvas: HTMLCanvasElement;
@@ -97,7 +96,7 @@ export class Game {
     this.sky = createSky(PALETTE.skyTop, PALETTE.skyHorizon, SUN_DIRECTION);
     this.scene.add(this.sky.mesh);
     this.lighting = createLighting(this.scene);
-    this.camera.layers.enable(SKY_LAYER);
+    this.camera.layers.enable(BEAUTY_ONLY_LAYER);
     this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, paper);
     this.run = this.createRun();
 
@@ -207,6 +206,7 @@ export class Game {
   }
 
   private render(alpha: number): void {
+    this.run.present(this.settings.reducedMotion);
     this.updateCamera(alpha);
     this.sky.mesh.position.copy(this.camera.position);
     this.sky.setTime(this.elapsed);
@@ -220,6 +220,7 @@ export class Game {
         gap: this.run.gap,
         fuel: this.run.body.fuel,
         dashReady: this.run.body.dashCooldown <= 0,
+        warning: this.reshapeWarning(),
       });
     }
 
@@ -234,7 +235,16 @@ export class Game {
       this.camera.updateProjectionMatrix();
     }
     this.camera.position.lerpVectors(this.previousEye, this.eye, alpha);
-    this.camera.rotation.set(this.pitch, -this.yaw, 0, 'YXZ');
+
+    // Reduced motion turns the shudder off entirely.
+    const shake = this.run.reshapePhase !== 'idle' && !this.settings.reducedMotion ? RESHAPE_SHAKE : 0;
+    const shudder = this.elapsed * 60;
+    this.camera.rotation.set(
+      this.pitch + Math.sin(shudder) * shake,
+      -this.yaw + Math.cos(shudder * 0.7) * shake,
+      0,
+      'YXZ',
+    );
   }
 
   private syncEye(): void {
@@ -243,7 +253,22 @@ export class Game {
   }
 
   private createRun(): Run {
-    return new Run(this.scene, this.assets, Math.floor(Math.random() * 0x7fffffff));
+    const run = new Run(this.scene, this.assets, Math.floor(Math.random() * 0x7fffffff));
+    // A soft pulse when the zone is marked, and a firmer one when the walls start to move.
+    run.reshaper.events.on('telegraph', () => this.gamepad.rumble(0.2, 0.45, 700));
+    run.reshaper.events.on('move', () => this.gamepad.rumble(0.55, 0.9, 900));
+    return run;
+  }
+
+  private reshapeWarning(): string {
+    switch (this.run.reshapePhase) {
+      case 'telegraph':
+        return 'INK SHIFTING';
+      case 'moving':
+        return 'RESHAPING';
+      case 'idle':
+        return '';
+    }
   }
 
   private debugText(): string {
@@ -259,6 +284,7 @@ export class Game {
       `speed ${this.run.forwardSpeed.toFixed(1)}   pace ${this.run.pace.toFixed(1)}   gap ${this.run.gap.toFixed(1)} m`,
       `pos ${body.x.toFixed(1)} ${body.y.toFixed(1)} ${body.z.toFixed(1)}   ${body.grounded ? 'ground' : 'air'}`,
       `fuel ${(body.fuel * 100).toFixed(0)}%   dash ${dash}`,
+      `reshape ${this.run.reshapePhase}`,
     ].join('\n');
   }
 

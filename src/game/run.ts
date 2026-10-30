@@ -1,10 +1,13 @@
 import { DataTexture, DoubleSide, MeshToonMaterial, Scene, Texture } from 'three';
+import { createRng } from '../core/rng';
 import { createNoise } from '../procgen/noise';
 import { PALETTE } from '../render/palette';
 import { createToonMaterial } from '../render/toon';
 import { createBody, stepBody, type Body, type Intent } from '../player/movement';
 import { type Box } from '../world/collision';
 import { Canyon } from '../world/canyon';
+import { Reshaper, type ReshapePhase } from '../world/reshape';
+import { ReshapeGlow } from '../world/reshape-glow';
 import { TideWave } from '../world/tide-wave';
 import { paceAt } from './pace';
 import { stepGap, TIDE } from './tide';
@@ -30,6 +33,9 @@ export class Run {
   private readonly canyon: Canyon;
   private readonly wave: TideWave;
   private readonly waveMaterial: MeshToonMaterial;
+  private readonly glow: ReshapeGlow;
+  /** Subscribe to `reshaper.events` to react to telegraphs and moves, such as rumble or HUD warnings. */
+  readonly reshaper: Reshaper;
   private readonly boxes: Box[] = [];
   private previousZ = 0;
   private forwardSpeedValue = 0;
@@ -51,6 +57,16 @@ export class Run {
     this.wave = new TideWave(this.waveMaterial);
     this.wave.update(this.body.z + this.gapValue, 0);
     scene.add(this.wave.mesh);
+
+    this.reshaper = new Reshaper(createRng(seed ^ 0x3a7c91));
+    this.glow = new ReshapeGlow();
+    scene.add(this.glow.mesh);
+    this.reshaper.events.on('telegraph', (zone) => this.glow.show(zone));
+    this.reshaper.events.on('settle', () => this.glow.hide());
+  }
+
+  get reshapePhase(): ReshapePhase {
+    return this.reshaper.phase;
   }
 
   get status(): RunStatus {
@@ -100,15 +116,29 @@ export class Run {
       this.gapValue = stepGap(this.gapValue, this.forwardSpeedValue, paceAt(this.timeValue), dt);
     }
     this.canyon.update(this.body.z);
+    this.reshaper.update(dt, this.timeValue, this.body.z, this.canyon);
     this.wave.update(this.body.z + this.gapValue, this.timeValue);
 
     if (this.gapValue <= 0) this.statusValue = 'over';
+  }
+
+  /** Fills `out` with the colliders near the player. Exposed for tests and debugging. */
+  collidersNear(out: Box[]): Box[] {
+    return this.canyon.boxesNear(this.body.z, COLLIDE_RADIUS, out);
+  }
+
+  /** Render-side work: pulses the telegraph and writes any moved slots to the GPU. Call once per frame. */
+  present(reducedMotion: boolean): void {
+    this.glow.update(this.reshaper.phase, this.reshaper.progress, this.timeValue, reducedMotion);
+    this.canyon.flush();
   }
 
   dispose(): void {
     this.scene.remove(this.wave.mesh);
     this.wave.dispose();
     this.waveMaterial.dispose();
+    this.scene.remove(this.glow.mesh);
+    this.glow.dispose();
     this.canyon.dispose();
   }
 }

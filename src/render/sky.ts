@@ -1,5 +1,5 @@
 import { BackSide, Color, Mesh, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
-import { SKY_LAYER } from './layers';
+import { BEAUTY_ONLY_LAYER } from './layers';
 
 export interface Sky {
   readonly mesh: Mesh;
@@ -87,7 +87,7 @@ export function createSky(top: Color, horizon: Color, sunDirection: Vector3): Sk
   const mesh = new Mesh(new SphereGeometry(400, 32, 16), material);
   mesh.renderOrder = -1;
   mesh.frustumCulled = false;
-  mesh.layers.set(SKY_LAYER);
+  mesh.layers.set(BEAUTY_ONLY_LAYER);
   return {
     mesh,
     setTime(seconds: number) {

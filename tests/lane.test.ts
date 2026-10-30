@@ -2,22 +2,23 @@ import { Scene, Texture } from 'three';
 import { describe, expect, it } from 'vitest';
 import { createRng } from '../src/core/rng';
 import { Run } from '../src/game/run';
-import { type Intent } from '../src/player/movement';
+import { BODY, type Intent } from '../src/player/movement';
+import { separateCapsule, type Box } from '../src/world/collision';
 import { createToonRamp } from '../src/render/toon';
-import { LANE_HALF, wallGap } from '../src/world/layout';
 
-const CAPSULE_RADIUS = 0.4;
-/** Ledges sit above head height, so this only bounds a body that is standing on the floor. */
-const GROUND_Y = 1;
+/**
+ * A reshape moves a wall by up to a few centimeters per frame, so a body can end a frame that
+ * close to a wall. Anything deeper than this would be the body really being inside the wall.
+ */
+const MAX_OVERLAP = 0.1;
 
 describe('movement against the canyon walls', () => {
-  it('never lets a body on the floor pass a wall face, with strafing and jumps', () => {
+  it('never leaves the body inside a collider, with strafing, jumps, dashes, and reshapes', () => {
     const offenders: string[] = [];
+    const nearby: Box[] = [];
     for (let seed = 1; seed <= 40; seed++) {
       const rng = createRng(seed * 13);
       const run = new Run(new Scene(), { ramp: createToonRamp(), mottle: new Texture() }, seed);
-      const right = LANE_HALF + wallGap(seed, 1) - CAPSULE_RADIUS;
-      const left = LANE_HALF + wallGap(seed, -1) - CAPSULE_RADIUS;
       let strafe = 0;
       for (let i = 0; i < 60 * 25 && run.status === 'running'; i++) {
         if (i % 30 === 0) strafe = rng.pick([-1, 0, 1]);
@@ -32,11 +33,19 @@ describe('movement against the canyon walls', () => {
           dashPressed: i % 120 === 0,
         };
         run.update(1 / 60, intent);
+        run.present(false);
+
         const { x, y, z } = run.body;
-        if (y < GROUND_Y && (x > right + 0.02 || x < -left - 0.02)) {
-          offenders.push(`seed ${seed}: x ${x.toFixed(2)} y ${y.toFixed(2)} z ${z.toFixed(1)}`);
-          break;
+        for (const box of run.collidersNear(nearby)) {
+          const probe = { x, y, z };
+          if (!separateCapsule(probe, BODY.radius, BODY.height, box)) continue;
+          const overlap = Math.hypot(probe.x - x, probe.y - y, probe.z - z);
+          if (overlap > MAX_OVERLAP) {
+            offenders.push(`seed ${seed}: overlap ${overlap.toFixed(2)} at x ${x.toFixed(2)} y ${y.toFixed(2)} z ${z.toFixed(1)}`);
+            break;
+          }
         }
+        if (offenders.length > 0) break;
       }
     }
     expect(offenders).toEqual([]);

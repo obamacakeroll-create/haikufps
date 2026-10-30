@@ -1,14 +1,14 @@
-/** An axis-aligned box that may be turned about the vertical axis. */
+/** An axis-aligned box that may be turned about the vertical axis. Reshaping moves it in place. */
 export interface Box {
   /** Center in world space. */
-  readonly x: number;
-  readonly y: number;
-  readonly z: number;
+  x: number;
+  y: number;
+  z: number;
   /** Half extents in the box's own frame, before yaw. */
-  readonly hx: number;
-  readonly hy: number;
-  readonly hz: number;
-  readonly yaw: number;
+  hx: number;
+  hy: number;
+  hz: number;
+  yaw: number;
 }
 
 /** Unit normal of a contact, pointing from the box toward the capsule. */

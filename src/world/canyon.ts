@@ -35,15 +35,37 @@ const FLOOR_FLAT_HALF_WIDTH = 7;
 const MAX_SLABS_PER_MESH = 256;
 const UP = new Vector3(0, 1, 0);
 
+/**
+ * A slot in a loaded section. Its placement and collider change during a reshape, while `slot`
+ * keeps the generated values it started from.
+ */
+export interface LiveSlot {
+  readonly slot: Slot;
+  readonly meshIndex: number;
+  /** Current center and width. Height and depth never change. */
+  x: number;
+  y: number;
+  width: number;
+  /** Collider that mirrors the placement above. `Canyon.setPose` keeps the two in step. */
+  readonly box: Box;
+}
+
 interface LoadedSection {
   readonly section: Section;
   readonly floor: Mesh;
-  readonly boxes: readonly Box[];
+  readonly slots: LiveSlot[];
+}
+
+/** Placement of one slot, kept while its section is unloaded. */
+interface SavedPose {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
 }
 
 /**
  * Streams canyon sections around the player. Walls and ledges are drawn with one InstancedMesh per
- * geometry variant, rebuilt whenever the set of sections changes.
+ * geometry variant. Placement changes are written in one pass by `flush`.
  */
 export class Canyon {
   private readonly sections = new Map<number, LoadedSection>();
@@ -57,6 +79,9 @@ export class Canyon {
   private readonly quaternion = new Quaternion();
   private readonly scale = new Vector3();
   private readonly matrix = new Matrix4();
+  /** Reshaped placements of unloaded sections, so walking back finds the canyon as it was left. */
+  private readonly savedPoses = new Map<number, SavedPose[]>();
+  private dirty = false;
 
   constructor(
     private readonly scene: Scene,
@@ -94,21 +119,13 @@ export class Canyon {
     const current = sectionIndexAt(playerZ);
     const first = current - BEHIND_SECTIONS;
     const last = current + AHEAD_SECTIONS;
-    let changed = false;
 
     for (const index of [...this.sections.keys()]) {
-      if (index < first || index > last) {
-        this.unload(index);
-        changed = true;
-      }
+      if (index < first || index > last) this.unload(index);
     }
     for (let index = first; index <= last; index++) {
-      if (!this.sections.has(index)) {
-        this.load(index);
-        changed = true;
-      }
+      if (!this.sections.has(index)) this.load(index);
     }
-    if (changed) this.sync();
   }
 
   /**
@@ -118,11 +135,39 @@ export class Canyon {
   boxesNear(z: number, radius: number, out: Box[]): Box[] {
     out.length = 0;
     for (const loaded of this.sections.values()) {
-      for (const box of loaded.boxes) {
+      for (const live of loaded.slots) {
+        const { box } = live;
         if (Math.abs(box.z - z) <= Math.max(box.hx, box.hz) + radius) out.push(box);
       }
     }
     return out;
+  }
+
+  /** Fills `out` with the live slots whose centers lie between `zFar` and `zNear`. */
+  slotsBetween(zFar: number, zNear: number, out: LiveSlot[]): LiveSlot[] {
+    out.length = 0;
+    for (const loaded of this.sections.values()) {
+      for (const live of loaded.slots) {
+        if (live.box.z >= zFar && live.box.z <= zNear) out.push(live);
+      }
+    }
+    return out;
+  }
+
+  /** Moves a slot and its collider. Call `flush` once after a batch of moves. */
+  setPose(live: LiveSlot, x: number, y: number, width: number): void {
+    live.x = x;
+    live.y = y;
+    live.width = width;
+    live.box.x = x;
+    live.box.y = y;
+    live.box.hx = width / 2;
+    this.dirty = true;
+  }
+
+  /** Writes instance matrices when any slot has moved or sections have changed. */
+  flush(): void {
+    if (this.dirty) this.sync();
   }
 
   /** Number of loaded sections. Exposed for tests and the debug overlay. */
@@ -140,25 +185,40 @@ export class Canyon {
 
   private load(index: number): void {
     const section = generateSection(this.runSeed, index);
-    const floor = new Mesh(
-      this.buildFloorGeometry(section),
-      this.floorMaterial,
-    );
+    const floor = new Mesh(this.buildFloorGeometry(section), this.floorMaterial);
     floor.receiveShadow = true;
     this.scene.add(floor);
-    this.sections.set(index, {
-      section,
-      floor,
-      boxes: section.slots.map(slotBox),
+
+    const slots = section.slots.map(
+      (slot): LiveSlot => ({
+        slot,
+        meshIndex: slot.kind === 'ledge' ? this.meshes.length - 1 : slot.variant,
+        x: slot.x,
+        y: slot.y,
+        width: slot.width,
+        box: slotBox(slot),
+      }),
+    );
+    this.savedPoses.get(index)?.forEach((pose, i) => {
+      const live = slots[i];
+      if (live) this.setPose(live, pose.x, pose.y, pose.width);
     });
+    this.savedPoses.delete(index);
+    this.sections.set(index, { section, floor, slots });
+    this.dirty = true;
   }
 
   private unload(index: number): void {
     const loaded = this.sections.get(index);
     if (!loaded) return;
+    this.savedPoses.set(
+      index,
+      loaded.slots.map(({ x, y, width }) => ({ x, y, width })),
+    );
     this.scene.remove(loaded.floor);
     loaded.floor.geometry.dispose();
     this.sections.delete(index);
+    this.dirty = true;
   }
 
   private buildFloorGeometry(section: Section): BufferGeometry {
@@ -174,30 +234,31 @@ export class Canyon {
     return geometry;
   }
 
-  /** Rewrites every instance matrix from the loaded sections. */
+  /** Rewrites every instance matrix from the loaded slots. */
   private sync(): void {
     this.counts.fill(0);
     for (const loaded of this.sections.values()) {
-      for (const slot of loaded.section.slots) {
-        const meshIndex = slot.kind === 'ledge' ? this.meshes.length - 1 : slot.variant;
-        const mesh = this.meshes[meshIndex];
-        const instance = this.counts[meshIndex] ?? 0;
+      for (const live of loaded.slots) {
+        const mesh = this.meshes[live.meshIndex];
+        const instance = this.counts[live.meshIndex] ?? 0;
         if (!mesh || instance >= MAX_SLABS_PER_MESH) continue;
-        this.writeInstance(mesh, instance, slot);
-        this.counts[meshIndex] = instance + 1;
+        this.writeInstance(mesh, instance, live);
+        this.counts[live.meshIndex] = instance + 1;
       }
     }
     this.meshes.forEach((mesh, i) => {
       mesh.count = this.counts[i] ?? 0;
       mesh.instanceMatrix.needsUpdate = true;
     });
+    this.dirty = false;
   }
 
-  private writeInstance(mesh: InstancedMesh, instance: number, slot: Slot): void {
+  private writeInstance(mesh: InstancedMesh, instance: number, live: LiveSlot): void {
+    const { slot } = live;
     const base = slot.kind === 'ledge' ? LEDGE_BASE : WALL_VARIANTS[slot.variant] ?? LEDGE_BASE;
-    this.position.set(slot.x, slot.y, slot.z);
+    this.position.set(live.x, live.y, slot.z);
     this.quaternion.setFromAxisAngle(UP, slot.yaw);
-    this.scale.set(slot.width / base.width, slot.height / base.height, slot.depth / base.depth);
+    this.scale.set(live.width / base.width, slot.height / base.height, slot.depth / base.depth);
     this.matrix.compose(this.position, this.quaternion, this.scale);
     mesh.setMatrixAt(instance, this.matrix);
   }

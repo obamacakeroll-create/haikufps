@@ -1,3 +1,4 @@
+import { clamp } from '../core/math';
 import { createRng } from '../core/rng';
 import type { Box } from './collision';
 
@@ -31,6 +32,65 @@ const LEDGE_CHANCE = 0.55;
 const WALL_GAP_MIN = 0.9;
 const WALL_GAP_MAX = 1.3;
 const LEDGE_OUTER_EDGE = LANE_HALF + 1.5;
+export const LEDGE_HEIGHT = 0.9;
+
+/**
+ * Limits on where reshaping may move solid geometry. Every reshape target is clamped to these, so
+ * the lane stays open and every ledge stays reachable however the canyon has been rearranged.
+ */
+export const RESHAPE_LIMITS = {
+  /** Smallest distance between a wall face and the lane's edge. */
+  wallClearance: 0.6,
+  /** How far a wall face may move away from the lane, beyond its place in the run. */
+  wallRetract: 2,
+  /** Ledge top range. The bottom stays above head height, and the top stays within jetpack reach. */
+  ledgeTopMin: LEDGE_MIN_BOTTOM + LEDGE_HEIGHT,
+  ledgeTopMax: 4.8,
+  /** A ledge's inner edge may not come closer to the centerline than this. */
+  ledgeInnerMin: 1.6,
+  /** How far a ledge may widen or narrow from its generated width. */
+  ledgeReach: 0.8,
+} as const;
+
+/** Where a slot sits and how wide it is. Walls and ledges are the only things reshaping moves. */
+export interface Pose {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+}
+
+export function basePose(slot: Slot): Pose {
+  return { x: slot.x, y: slot.y, width: slot.width };
+}
+
+/** Clamps a requested pose to the reshape limits. Returns a new pose. */
+export function constrainPose(slot: Slot, pose: Pose): Pose {
+  const side = slot.x < 0 ? -1 : 1;
+  if (slot.kind === 'wall') {
+    const baseFace = Math.abs(slot.x) - slot.width / 2;
+    const face = clamp(
+      Math.abs(pose.x) - slot.width / 2,
+      LANE_HALF + RESHAPE_LIMITS.wallClearance,
+      baseFace + RESHAPE_LIMITS.wallRetract,
+    );
+    return { x: side * (face + slot.width / 2), y: slot.y, width: slot.width };
+  }
+
+  // The outer edge stays buried in the wall. Only the inner edge and the height move.
+  const widest = Math.min(slot.width + RESHAPE_LIMITS.ledgeReach, LEDGE_OUTER_EDGE - RESHAPE_LIMITS.ledgeInnerMin);
+  const width = clamp(pose.width, slot.width - RESHAPE_LIMITS.ledgeReach, widest);
+  const top = clamp(pose.y + LEDGE_HEIGHT / 2, RESHAPE_LIMITS.ledgeTopMin, RESHAPE_LIMITS.ledgeTopMax);
+  return { x: side * (LEDGE_OUTER_EDGE - width / 2), y: top - LEDGE_HEIGHT / 2, width };
+}
+
+export function lerpPose(from: Pose, to: Pose, t: number): Pose {
+  return {
+    x: from.x + (to.x - from.x) * t,
+    y: from.y + (to.y - from.y) * t,
+    width: from.width + (to.width - from.width) * t,
+  };
+}
+
 
 export type SlotKind = 'wall' | 'ledge';
 
@@ -112,17 +172,16 @@ export function generateSection(runSeed: number, index: number): Section {
       const innerEdge = LANE_HALF - protrude;
       const width = LEDGE_OUTER_EDGE - innerEdge;
       const depth = rng.range(4.5, 7);
-      const height = 0.9;
-      const top = rng.range(2.9, 4.3);
+      const top = rng.range(RESHAPE_LIMITS.ledgeTopMin, 4.3);
       slots.push({
         kind: 'ledge',
         variant: 0,
         x: side * (innerEdge + LEDGE_OUTER_EDGE) / 2,
-        y: top - height / 2,
+        y: top - LEDGE_HEIGHT / 2,
         z: rng.range(zFar + depth / 2, zNear - depth / 2),
         yaw: 0,
         width,
-        height,
+        height: LEDGE_HEIGHT,
         depth,
       });
     }

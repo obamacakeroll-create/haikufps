@@ -185,6 +185,19 @@ canvas.game {
   text-shadow: 3px 3px 0 var(--vermilion);
 }
 
+.hud-warning {
+  position: absolute;
+  top: 66px;
+  left: 50%;
+  margin: 0;
+  transform: translateX(-50%);
+  font-size: 0.85rem;
+  letter-spacing: 0.3em;
+  white-space: nowrap;
+  color: var(--vermilion);
+  animation: blink 0.5s steps(2, start) infinite;
+}
+
 .hud-side {
   position: absolute;
   left: 16px;

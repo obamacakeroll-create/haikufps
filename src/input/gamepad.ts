@@ -132,6 +132,7 @@ export class GamepadSource implements InputSource {
 
   /** Dual-rumble through the Gamepad API. Silently does nothing where haptics are unsupported. */
   rumble(strong: number, weak: number, durationMs: number): void {
+    if (!this.settings().rumble) return;
     const actuator = this.current?.vibrationActuator;
     if (actuator === undefined || typeof actuator.playEffect !== 'function') return;
     const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));

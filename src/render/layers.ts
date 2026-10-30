@@ -1,2 +1,5 @@
-/** Layer for objects that only the beauty pass draws, such as the sky. Keeps them out of the normal pre-pass. */
-export const SKY_LAYER = 1;
+/**
+ * Layer for objects only the beauty pass draws, such as the sky and glows. They stay out of the
+ * normal pre-pass, so they never pick up ink outlines.
+ */
+export const BEAUTY_ONLY_LAYER = 1;

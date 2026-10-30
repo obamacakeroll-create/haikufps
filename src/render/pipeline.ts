@@ -14,7 +14,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
-import { SKY_LAYER } from './layers';
+import { BEAUTY_ONLY_LAYER } from './layers';
 import { createCompositeShader, type CompositeUniforms } from './outline';
 
 /** A depth texture keeps the size it was created with, so the target is rebuilt whenever the size changes. */
@@ -83,7 +83,7 @@ export class RenderPipeline {
     this.renderer.info.reset();
 
     this.normalCamera.copy(this.camera);
-    this.normalCamera.layers.disable(SKY_LAYER);
+    this.normalCamera.layers.disable(BEAUTY_ONLY_LAYER);
     const previousOverride = this.scene.overrideMaterial;
     this.scene.overrideMaterial = this.normalMaterial;
     this.renderer.setRenderTarget(this.normalTarget);
