@@ -30,6 +30,17 @@ const BINDINGS: Readonly<Record<string, readonly Action[]>> = {
 
 const MOUSE_CODES = ['Mouse0', 'Mouse2'] as const;
 
+/**
+ * Mouse look is ignored for this long after pointer lock starts. Browsers can report a jump in movement
+ * as the lock takes hold, and a jump that size would spin the view.
+ */
+const LOCK_SETTLE_MS = 250;
+/**
+ * A single mouse event this large is a jump from the pointer lock, not a flick. Flicks come in
+ * events far below it, so an event this big is dropped rather than applied.
+ */
+const MAX_LOOK_PIXELS = 100;
+
 export class KeyboardMouseSource implements InputSource {
   readonly device = 'keyboard';
   private readonly codesDown = new Set<string>();
@@ -45,6 +56,7 @@ export class KeyboardMouseSource implements InputSource {
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('mouseup', this.onMouseUp);
     window.addEventListener('mousemove', this.onMouseMove);
+    document.addEventListener('pointerlockchange', this.onLockChange);
     window.addEventListener('blur', this.reset);
     canvas.addEventListener('mousedown', this.onMouseDown);
     canvas.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -101,8 +113,16 @@ export class KeyboardMouseSource implements InputSource {
     for (const code of MOUSE_CODES) this.codesDown.delete(code);
   };
 
+  private lockedAt = Number.NEGATIVE_INFINITY;
+
+  private readonly onLockChange = (): void => {
+    if (document.pointerLockElement === this.canvas) this.lockedAt = performance.now();
+  };
+
   private readonly onMouseMove = (event: MouseEvent): void => {
     if (document.pointerLockElement !== this.canvas) return;
+    if (performance.now() - this.lockedAt < LOCK_SETTLE_MS) return;
+    if (Math.abs(event.movementX) > MAX_LOOK_PIXELS || Math.abs(event.movementY) > MAX_LOOK_PIXELS) return;
     this.lookX += event.movementX;
     this.lookY += event.movementY;
   };

@@ -11,7 +11,7 @@ import { Emitter } from '../core/events';
 import { clamp } from '../core/math';
 import { createLoop, type Loop } from '../core/loop';
 import { createRng } from '../core/rng';
-import { SAVE_VERSION, loadSave, writeSave } from '../core/save';
+import { SAVE_VERSION, loadSave, type SaveData, writeSave } from '../core/save';
 import { type Settings } from '../core/settings';
 import { browserStore, type KeyValueStore } from '../core/storage';
 import { AudioEngine } from '../audio/engine';
@@ -19,6 +19,11 @@ import { Music } from '../audio/music';
 import { Sfx } from '../audio/sfx';
 import { difficulty } from '../combat/spawner';
 import { type WeaponId } from '../combat/weapons';
+import { type InputDevice } from '../input/actions';
+import { GhostRecorder, type GhostPose, type GhostTrack, sampleGhost } from '../meta/ghost';
+import { loadoutFor, type Loadout, recordRun, UNLOCKS } from '../meta/progress';
+import { addRecord, placeOf, type RunRecord, scoreRun } from '../meta/records';
+import { GhostView } from '../render/ghost-view';
 import type { Action } from '../input/actions';
 import { AimState } from '../input/aim';
 import { GamepadSource } from '../input/gamepad';
@@ -34,7 +39,7 @@ import { createSky, type Sky } from '../render/sky';
 import { createToonRamp } from '../render/toon';
 import { Viewmodel } from '../render/viewmodel';
 import { Hud } from '../ui/hud';
-import { Ui } from '../ui/ui';
+import { type ProgressView, Ui } from '../ui/ui';
 import { Run, type RunAssets, type RunCause } from './run';
 
 type GameState = 'title' | 'playing' | 'paused' | 'dead';
@@ -53,7 +58,6 @@ const HURT_SHAKE_DECAY = 6;
 /** Seconds after death before input can restart. Stops a held button from restarting at once. */
 const DEATH_DELAY = 0.6;
 const MAX_PIXEL_RATIO = 1.5;
-const START_ACTIONS: readonly Action[] = ['confirm', 'fire', 'jump', 'dash', 'reload', 'aim', 'pause', 'back'];
 const WEAPON_KEYS: readonly Action[] = ['weapon1', 'weapon2', 'weapon3'];
 const WEAPON_ACTIONS: readonly Action[] = ['weaponNext', 'weaponPrev', ...WEAPON_KEYS];
 /** How each shot feels: camera kick in radians, gun kick from 0 to 1, and rumble. */
@@ -93,6 +97,14 @@ export class Game {
   private readonly sfx = new Sfx(this.engine);
   private readonly music = new Music(this.engine);
   private run: Run;
+  private save: SaveData;
+  /** The ghost this run races, when the setting is on and a best run exists. */
+  private raceTrack: GhostTrack | undefined;
+  private recorder = new GhostRecorder();
+  private readonly ghostView = new GhostView();
+  private readonly ghostPose: GhostPose = { x: 0, y: 0, z: 0, yaw: 0 };
+  private runReshapes = 0;
+  private shownDevice: InputDevice | undefined;
   /** Camera eye at the last two simulation steps. Rendering blends between them. */
   private readonly eye = new Vector3(0, BODY.eyeHeight, 0);
   private readonly previousEye = new Vector3(0, BODY.eyeHeight, 0);
@@ -108,7 +120,8 @@ export class Game {
   private elapsed = 0;
 
   constructor(root: HTMLElement) {
-    this.settings = loadSave(this.store).settings;
+    this.save = loadSave(this.store);
+    this.settings = this.save.settings;
     this.applyVolumes();
     // Browsers only allow sound after a real gesture, so the first click or key unlocks it.
     const unlock = (): void => this.engine.unlock();
@@ -140,8 +153,9 @@ export class Game {
     this.viewmodel = new Viewmodel(ramp);
     this.camera.add(this.viewmodel.root);
     this.scene.add(this.camera);
+    this.scene.add(this.ghostView.mesh);
     this.pipeline = new RenderPipeline(this.renderer, this.scene, this.camera, paper);
-    this.run = this.createRun();
+    this.run = this.createRun(randomSeed(), loadoutFor(this.save.stats));
 
     this.keyboard = new KeyboardMouseSource(this.canvas, () => this.settings);
     this.gamepad = new GamepadSource(() => this.settings);
@@ -176,7 +190,7 @@ export class Game {
     this.resize();
     this.syncEye();
     this.previousEye.copy(this.eye);
-    this.ui.showTitle();
+    this.showTitle();
   }
 
   start(): void {
@@ -187,13 +201,17 @@ export class Game {
     this.elapsed += dt;
     this.previousEye.copy(this.eye);
     const controls = this.input.poll(dt);
+    if (this.input.device !== this.shownDevice) {
+      this.shownDevice = this.input.device;
+      this.ui.setDevice(this.shownDevice);
+    }
     if (controls.pressed('debug')) this.ui.toggleDebug();
     if (this.state !== 'playing') this.menuSounds(controls);
     this.aim.setMode(this.settings.aimMode);
 
     switch (this.state) {
       case 'title':
-        if (START_ACTIONS.some((action) => controls.pressed(action))) this.startFromTitle();
+        this.ui.updateTitle(controls);
         break;
       case 'playing':
         this.updatePlaying(controls, dt);
@@ -267,6 +285,7 @@ export class Game {
     if (controls.pressed('jump') && wasGrounded) this.sfx.jump();
     if (body.dashTime > 0 && dashWas <= 0) this.sfx.dash();
     this.music.update(difficulty(this.run.time), this.run.gap);
+    this.recorder.update(dt, this.run.body.x, this.run.body.y, this.run.body.z, this.yaw);
     this.syncEye();
 
     this.adsBlend += ((aiming ? 1 : 0) - this.adsBlend) * Math.min(1, dt * 14);
@@ -295,6 +314,7 @@ export class Game {
 
   private render(alpha: number): void {
     this.run.present(alpha, this.settings.reducedMotion);
+    this.placeGhost();
     this.updateCamera(alpha);
     this.sky.mesh.position.copy(this.camera.position);
     this.sky.setTime(this.elapsed);
@@ -352,8 +372,9 @@ export class Game {
     this.eye.set(x, y + BODY.eyeHeight, z);
   }
 
-  private createRun(): Run {
-    const run = new Run(this.scene, this.assets, Math.floor(Math.random() * 0x7fffffff));
+  private createRun(seed: number, loadout: Loadout): Run {
+    const run = new Run(this.scene, this.assets, seed, loadout);
+    run.reshaper.events.on('settle', () => this.runReshapes++);
     // A soft pulse when the zone is marked, and a firmer one when the walls start to move.
     run.reshaper.events.on('telegraph', () => {
       this.gamepad.rumble(0.2, 0.45, 700);
@@ -420,6 +441,7 @@ export class Game {
     return [
       `fps ${this.loop.stats.fps.toFixed(0)}   frame ${this.loop.stats.frameMs.toFixed(1)} ms`,
       `draw calls ${calls}   triangles ${triangles}   sections ${this.run.loadedSections}`,
+      `view yaw ${((this.yaw / DEG) % 360).toFixed(0)}   pitch ${(this.pitch / DEG).toFixed(0)}`,
       `state ${this.state}   device ${this.input.device}`,
       `aim ${this.settings.aimMode}   ${this.aim.active ? 'ON' : 'off'}`,
       `run ${this.run.time.toFixed(1)} s   dist ${this.run.distance.toFixed(1)} m`,
@@ -443,8 +465,13 @@ export class Game {
   }
 
   private beginRun(): void {
+    // Racing a ghost replays its canyon, so the ghost and the player run the same course.
+    const race = this.settings.raceGhost ? this.save.ghost : undefined;
+    this.raceTrack = race;
+    this.recorder = new GhostRecorder();
+    this.runReshapes = 0;
     this.run.dispose();
-    this.run = this.createRun();
+    this.run = this.createRun(race?.seed ?? randomSeed(), loadoutFor(this.save.stats));
     this.yaw = 0;
     this.pitch = 0;
     this.adsBlend = 0;
@@ -466,13 +493,80 @@ export class Game {
     this.music.duck(true);
     this.deadTime = 0;
     this.aim.release();
+    this.ghostView.hide();
+
+    const distance = this.run.distance;
+    const kills = this.run.combat.kills;
+    const seconds = this.run.time;
+    const cause = this.run.cause ?? 'tide';
+    const record: RunRecord = {
+      distance,
+      kills,
+      seconds,
+      score: scoreRun(distance, kills, seconds),
+      seed: this.run.seed,
+      cause,
+      date: Date.now(),
+    };
+    let ghostDelta: number | undefined;
+    if (this.raceTrack) {
+      sampleGhost(this.raceTrack, seconds, this.ghostPose);
+      // The ghost's distance is minus its z, so the gap at this moment is the sum.
+      ghostDelta = distance + this.ghostPose.z;
+    }
+
+    const previousBest = this.save.stats.bestDistance;
+    const records = addRecord(this.save.records, record);
+    const ghost =
+      this.save.ghost === undefined || distance > this.save.ghost.distance
+        ? this.recorder.track(this.run.seed, distance)
+        : this.save.ghost;
+    this.save = {
+      version: SAVE_VERSION,
+      settings: this.settings,
+      records,
+      stats: recordRun(this.save.stats, { distance, kills, reshapes: this.runReshapes }),
+      ghost,
+    };
+    this.persist();
+
     this.ui.showDeath({
-      title: CAUSE_TITLE[this.run.cause ?? 'tide'],
-      distance: this.run.distance,
-      seconds: this.run.time,
-      kills: this.run.combat.kills,
+      title: CAUSE_TITLE[cause],
+      distance,
+      seconds,
+      kills,
+      place: placeOf(records, record),
+      newBest: distance > previousBest,
+      ghostDelta,
     });
     this.exitLock();
+  }
+
+  /** Puts the ghost where the best run was at this moment. Hidden when not racing. */
+  private placeGhost(): void {
+    if (!this.raceTrack || this.state === 'title' || this.state === 'dead') {
+      this.ghostView.hide();
+      return;
+    }
+    this.ghostView.place(sampleGhost(this.raceTrack, this.run.time, this.ghostPose));
+  }
+
+  private showTitle(): void {
+    this.ui.showTitle(this.progressView());
+  }
+
+  private progressView(): ProgressView {
+    const { stats } = this.save;
+    return {
+      records: this.save.records,
+      stats,
+      unlocks: UNLOCKS.map((unlock) => ({
+        title: unlock.title,
+        goal: unlock.goal,
+        effect: unlock.effect,
+        earned: unlock.earned(stats),
+      })),
+    };
   }
 
   private pause(): void {
@@ -495,7 +589,7 @@ export class Game {
   private quitToTitle(): void {
     this.state = 'title';
     this.aim.release();
-    this.ui.showTitle();
+    this.showTitle();
     this.music.stop();
     this.exitLock();
   }
@@ -515,7 +609,7 @@ export class Game {
   }
 
   private persist(): void {
-    writeSave(this.store, { version: SAVE_VERSION, settings: this.settings });
+    writeSave(this.store, this.save);
   }
 
   private readonly resize = (): void => {
@@ -528,6 +622,11 @@ export class Game {
 }
 
 /** +1 for the next weapon, -1 for the previous, 0 for neither pressed this step. */
+/** A fresh canyon for each run that is not racing a ghost. */
+function randomSeed(): number {
+  return Math.floor(Math.random() * 0x7fffffff);
+}
+
 function stepFrom(controls: Controls): number {
   if (controls.pressed('weaponNext')) return 1;
   if (controls.pressed('weaponPrev')) return -1;

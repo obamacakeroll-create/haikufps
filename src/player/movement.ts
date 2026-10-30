@@ -44,6 +44,8 @@ export interface Body {
   grounded: boolean;
   /** 0 to 1. */
   fuel: number;
+  /** Multiplier on how fast thrust drains fuel. Unlocks lower it. */
+  fuelBurn: number;
   /** Seconds of fuel rest left before refilling starts. */
   fuelRest: number;
   dashTime: number;
@@ -79,6 +81,7 @@ export function createBody(x: number, y: number, z: number): Body {
     vz: 0,
     grounded: true,
     fuel: 1,
+    fuelBurn: 1,
     fuelRest: 0,
     dashTime: 0,
     dashCooldown: 0,
@@ -136,7 +139,7 @@ export function stepBody(body: Body, intent: Intent, dt: number, boxes: readonly
     if (!standing && intent.jumpHeld && body.fuel > 0) {
       thrusting = true;
       body.vy = Math.min(MOVE.jetMaxRise, body.vy + MOVE.jetAccel * dt);
-      body.fuel = Math.max(0, body.fuel - MOVE.jetDrain * dt);
+      body.fuel = Math.max(0, body.fuel - MOVE.jetDrain * body.fuelBurn * dt);
       body.fuelRest = MOVE.fuelRest;
     } else {
       body.vy = Math.max(-MOVE.terminalSpeed, body.vy - MOVE.gravity * dt);

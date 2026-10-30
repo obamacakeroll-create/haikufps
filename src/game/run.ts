@@ -8,6 +8,7 @@ import { Health } from '../player/health';
 import { createBody, stepBody, type Body, type Intent } from '../player/movement';
 import { type Box } from '../world/collision';
 import { Canyon } from '../world/canyon';
+import { DEFAULT_LOADOUT, type Loadout } from '../meta/progress';
 import { Reshaper, type ReshapePhase } from '../world/reshape';
 import { ReshapeGlow } from '../world/reshape-glow';
 import { TideWave } from '../world/tide-wave';
@@ -58,8 +59,10 @@ export class Run {
   constructor(
     private readonly scene: Scene,
     assets: RunAssets,
-    seed: number,
+    readonly seed: number,
+    loadout: Loadout = DEFAULT_LOADOUT,
   ) {
+    this.body.fuelBurn = 1 / loadout.fuelScale;
     this.canyon = new Canyon(scene, seed, createNoise(seed), assets);
     this.canyon.update(this.body.z);
 
@@ -83,6 +86,7 @@ export class Run {
       createNoise(seed ^ 0x51ab),
       createRng(seed ^ 0x2f1d),
       { ramp: assets.ramp, splat: assets.splat },
+      loadout,
     );
     // A reshape that moves a mimic's zone shows it, so the player learns that walls can hide enemies.
     this.reshaper.events.on('move', ({ zone }) => this.combat.reveal(zone));

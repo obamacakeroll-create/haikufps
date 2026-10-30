@@ -11,6 +11,7 @@ import { BODY, shove, type Body } from '../player/movement';
 import { type Canyon, type LiveSlot } from '../world/canyon';
 import { type Box, separateCapsule } from '../world/collision';
 import { LANE_HALF, LEDGE_HEIGHT, type SlotKind } from '../world/layout';
+import { DEFAULT_LOADOUT, type Loadout } from '../meta/progress';
 import { type ReshapeZone } from '../world/reshape';
 import { awakenMimic, HOVER_HEIGHT, stepEnemy, type EnemyWorld } from './behaviors';
 import { createEnemy, ENEMY_STATS, type Enemy, type EnemyKind, type EnemySpot } from './enemy';
@@ -89,7 +90,7 @@ const RIFLE_SPLAT_CHANCE = 0.35;
  */
 export class Combat {
   readonly events = new Emitter<CombatEvents>();
-  readonly arsenal = new Arsenal();
+  readonly arsenal: Arsenal;
   /** Enemies the player killed this run. Enemies that spend themselves on the player do not count. */
   kills = 0;
   private readonly rng: Rng;
@@ -118,8 +119,10 @@ export class Combat {
     noise: Noise,
     rng: Rng,
     assets: CombatAssets,
+    private readonly loadout: Loadout = DEFAULT_LOADOUT,
   ) {
     this.rng = rng;
+    this.arsenal = new Arsenal(loadout.reloadScale);
     this.spawner = new Spawner(rng.fork(0x51));
     this.models = new EnemyModels(scene, assets.ramp, noise);
     this.projectiles = new ProjectileMeshes(scene, assets.ramp);
@@ -230,7 +233,8 @@ export class Combat {
     this.firePellets(weapon, eye, aim, input.aiming);
     // Recoil shoves the player back along the aim. Long bursts cost ground the tide can use.
     const flat = Math.max(Math.hypot(aim.x, aim.z), 0.3);
-    shove(this.body, (-aim.x / flat) * weapon.recoil, 0, (-aim.z / flat) * weapon.recoil);
+    const kick = weapon.recoil * this.loadout.recoilScale;
+    shove(this.body, (-aim.x / flat) * kick, 0, (-aim.z / flat) * kick);
   }
 
   private firePellets(weapon: HitscanWeapon, eye: Vec3, aim: Vec3, aiming: boolean): void {

@@ -97,6 +97,9 @@ export class Arsenal {
   private readonly loaded: number[] = WEAPONS.map((weapon) => weapon.magazine);
   private cooldown = 0;
   private reloadLeft = 0;
+  private reloadTotal = 0;
+
+  constructor(private readonly reloadScale = 1) {}
 
   get index(): number {
     return this.selected;
@@ -117,7 +120,7 @@ export class Arsenal {
 
   /** 0 when no reload is running, rising to 1 as it finishes. */
   get reloadProgress(): number {
-    return this.reloadLeft > 0 ? 1 - this.reloadLeft / this.weapon.reloadSeconds : 0;
+    return this.reloadLeft > 0 ? 1 - this.reloadLeft / this.reloadTotal : 0;
   }
 
   select(index: number): void {
@@ -133,7 +136,8 @@ export class Arsenal {
 
   reload(): boolean {
     if (this.reloadLeft > 0 || this.ammo >= this.weapon.magazine) return false;
-    this.reloadLeft = this.weapon.reloadSeconds;
+    this.reloadTotal = this.weapon.reloadSeconds * this.reloadScale;
+    this.reloadLeft = this.reloadTotal;
     return true;
   }
 

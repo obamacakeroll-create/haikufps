@@ -11,6 +11,8 @@ export interface Settings {
   fov: number;
   rumble: boolean;
   reducedMotion: boolean;
+  /** Race the best run's ghost on its canyon. */
+  raceGhost: boolean;
   masterVolume: number;
   musicVolume: number;
   sfxVolume: number;
@@ -25,6 +27,7 @@ export const DEFAULT_SETTINGS: Settings = {
   fov: 75,
   rumble: true,
   reducedMotion: false,
+  raceGhost: true,
   masterVolume: 0.8,
   musicVolume: 0.6,
   sfxVolume: 0.9,
@@ -80,6 +83,7 @@ export function normalizeSettings(raw: unknown): Settings {
     fov: readNumber(source, 'fov'),
     rumble: readBoolean(source, 'rumble'),
     reducedMotion: readBoolean(source, 'reducedMotion'),
+    raceGhost: readBoolean(source, 'raceGhost'),
     masterVolume: readNumber(source, 'masterVolume'),
     musicVolume: readNumber(source, 'musicVolume'),
     sfxVolume: readNumber(source, 'sfxVolume'),

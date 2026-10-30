@@ -1,5 +1,9 @@
 import { clampNumeric, type NumericKey, type Settings } from '../core/settings';
+import { type Action, type InputDevice } from '../input/actions';
 import type { Controls } from '../input/input';
+import { type Stats } from '../meta/progress';
+import { type RunRecord } from '../meta/records';
+import { glyph } from './glyphs';
 import { Menu, type MenuRow } from './menu';
 
 /** What the death screen shows. */
@@ -8,6 +12,25 @@ export interface DeathReport {
   distance: number;
   seconds: number;
   kills: number;
+  /** Place on the leaderboard, or undefined when the run did not make it. */
+  place: number | undefined;
+  newBest: boolean;
+  /** Meters ahead of (positive) or behind the ghost at the same moment. Undefined when not racing. */
+  ghostDelta: number | undefined;
+}
+
+export interface UnlockView {
+  readonly title: string;
+  readonly goal: string;
+  readonly effect: string;
+  readonly earned: boolean;
+}
+
+/** What the title screen shows about the player's progress. */
+export interface ProgressView {
+  readonly records: readonly RunRecord[];
+  readonly stats: Stats;
+  readonly unlocks: readonly UnlockView[];
 }
 
 export interface UiHandlers {
@@ -19,6 +42,10 @@ export interface UiHandlers {
 }
 
 type PauseView = 'main' | 'options';
+type TitleView = 'main' | 'options' | 'leaderboard' | 'unlocks';
+
+/** Any of these starts a run straight from the title, without going through the menu. */
+const START_ACTIONS: readonly Action[] = ['fire', 'jump', 'dash', 'reload', 'aim'];
 
 const percent = (value: number): string => `${Math.round(value * 100)}%`;
 
@@ -44,6 +71,17 @@ export class Ui {
   private readonly deathScreen: HTMLElement;
   private readonly deathTitle: HTMLElement;
   private readonly deathStats: HTMLElement;
+  private readonly deathNotes: HTMLElement;
+  private readonly deathPrompt: HTMLElement;
+  private readonly deathHint: HTMLElement;
+  private readonly titlePrompt: HTMLElement;
+  private readonly titleStats: HTMLElement;
+  private readonly titleMenu: Menu;
+  private readonly titleOptions: Menu;
+  private readonly titleBack: Menu;
+  private readonly leaderboardPanel: HTMLElement;
+  private readonly unlocksPanel: HTMLElement;
+  private titleView: TitleView = 'main';
   private readonly debugPanel: HTMLElement;
   private readonly mainMenu: Menu;
   private readonly optionsMenu: Menu;
@@ -55,20 +93,43 @@ export class Ui {
     private readonly handlers: UiHandlers,
   ) {
     this.titleScreen = element('section', 'screen title-screen');
+    this.titleStats = element('p', 'title-stats');
+    this.titlePrompt = element('p', 'prompt', 'Press any button or click to start');
+    this.titleMenu = new Menu([
+      { label: 'Start run', activate: () => handlers.onStart() },
+      { label: 'Leaderboard', activate: () => this.showTitleView('leaderboard') },
+      { label: 'Unlocks', activate: () => this.showTitleView('unlocks') },
+      { label: 'Options', activate: () => this.showTitleView('options') },
+    ]);
+    this.titleOptions = new Menu(this.buildOptionRows(() => this.showTitleView('main')));
+    this.leaderboardPanel = element('div', 'panel');
+    this.unlocksPanel = element('div', 'panel');
+    this.titleBack = new Menu([{ label: 'Back', activate: () => this.showTitleView('main') }]);
     this.titleScreen.append(
       element('h1', 'logo', 'HAIKUFPS'),
       element('p', 'tagline', 'Ink canyon. Keep moving.'),
-      element('p', 'prompt', 'Press any button or click to start'),
+      this.titleStats,
+      this.titlePrompt,
+      this.titleMenu.element,
+      this.titleOptions.element,
+      this.leaderboardPanel,
+      this.unlocksPanel,
+      this.titleBack.element,
       element('p', 'hint', 'PS5 DualSense: connect over USB or Bluetooth, then press any button'),
     );
-    this.titleScreen.addEventListener('click', () => handlers.onStart());
+    // Buttons and panels handle their own clicks. Anywhere else on the title starts a run.
+    this.titleScreen.addEventListener('click', (event) => {
+      if (this.titleView !== 'main') return;
+      if (event.target instanceof Element && event.target.closest('button, .panel')) return;
+      handlers.onStart();
+    });
 
     this.mainMenu = new Menu([
       { label: 'Resume', activate: () => handlers.onResume() },
       { label: 'Options', activate: () => this.showView('options') },
       { label: 'Quit to title', activate: () => handlers.onQuit() },
     ]);
-    this.optionsMenu = new Menu(this.buildOptionRows());
+    this.optionsMenu = new Menu(this.buildOptionRows(() => this.showView('main')));
 
     this.pauseScreen = element('section', 'screen pause-screen');
     this.pauseScreen.append(
@@ -79,13 +140,11 @@ export class Ui {
 
     this.deathTitle = element('h2', 'heading', 'The tide caught you');
     this.deathStats = element('p', 'death-stats');
+    this.deathNotes = element('p', 'death-notes');
+    this.deathPrompt = element('p', 'prompt', 'Jump or click to run again');
+    this.deathHint = element('p', 'hint', 'Pause or back for the title');
     this.deathScreen = element('section', 'screen death-screen');
-    this.deathScreen.append(
-      this.deathTitle,
-      this.deathStats,
-      element('p', 'prompt', 'Jump or click to run again'),
-      element('p', 'hint', 'Pause or back for the title'),
-    );
+    this.deathScreen.append(this.deathTitle, this.deathStats, this.deathNotes, this.deathPrompt, this.deathHint);
     this.deathScreen.addEventListener('click', () => handlers.onRetry());
 
     this.debugPanel = element('pre', 'debug');
@@ -107,10 +166,32 @@ export class Ui {
     this.debugPanel.textContent = text;
   }
 
-  showTitle(): void {
+  /** Shows the title with the player's progress. Starts on the main menu. */
+  showTitle(progress: ProgressView): void {
     this.hideAll();
     this.titleScreen.hidden = false;
-    this.view = 'main';
+    this.renderProgress(progress);
+    this.showTitleView('main');
+  }
+
+  /** Feedback on the title, pause, and death screens. Prompts name the buttons for the active device. */
+  setDevice(device: InputDevice): void {
+    this.deathPrompt.textContent = `Press ${glyph('jump', device)} or click to run again`;
+    this.deathHint.textContent = `${glyph('back', device)} for the title`;
+  }
+
+  /** Title input. Starts a run on a start button, and otherwise drives the title menus. */
+  updateTitle(controls: Controls): void {
+    if (this.titleView !== 'main') {
+      if (controls.pressed('back')) this.showTitleView('main');
+      else (this.titleView === 'options' ? this.titleOptions : this.titleBack).update(controls);
+      return;
+    }
+    if (START_ACTIONS.some((action) => controls.pressed(action))) {
+      this.handlers.onStart();
+      return;
+    }
+    this.titleMenu.update(controls);
   }
 
   showPause(): void {
@@ -125,6 +206,15 @@ export class Ui {
     const secs = Math.floor(report.seconds % 60).toString().padStart(2, '0');
     this.deathTitle.textContent = report.title;
     this.deathStats.textContent = `${Math.floor(report.distance)} m in ${minutes}:${secs}  |  ${report.kills} kills`;
+    const notes: string[] = [];
+    if (report.newBest) notes.push('New best');
+    if (report.place !== undefined) notes.push(`Leaderboard #${report.place}`);
+    if (report.ghostDelta !== undefined) {
+      const sign = report.ghostDelta >= 0 ? '+' : '';
+      notes.push(`Ghost ${sign}${Math.round(report.ghostDelta)} m`);
+    }
+    this.deathNotes.textContent = notes.join('  ·  ');
+    this.deathNotes.hidden = notes.length === 0;
     this.deathScreen.hidden = false;
   }
 
@@ -166,6 +256,7 @@ export class Ui {
   private commit(): void {
     this.handlers.onSettingsChanged();
     this.optionsMenu.refresh();
+    this.titleOptions.refresh();
   }
 
   private numericRow(
@@ -186,7 +277,7 @@ export class Ui {
     };
   }
 
-  private buildOptionRows(): MenuRow[] {
+  private buildOptionRows(back: () => void): MenuRow[] {
     const settings = this.settings;
     return [
       {
@@ -226,8 +317,60 @@ export class Ui {
           this.commit();
         },
       ),
-      { label: 'Back', activate: () => this.showView('main') },
+      toggleRow(
+        'Race your ghost',
+        () => settings.raceGhost,
+        (value) => {
+          settings.raceGhost = value;
+          this.commit();
+        },
+      ),
+      { label: 'Back', activate: back },
     ];
+  }
+
+  private showTitleView(view: TitleView): void {
+    this.titleView = view;
+    this.titleMenu.element.hidden = view !== 'main';
+    this.titleOptions.element.hidden = view !== 'options';
+    this.leaderboardPanel.hidden = view !== 'leaderboard';
+    this.unlocksPanel.hidden = view !== 'unlocks';
+    this.titleBack.element.hidden = view !== 'leaderboard' && view !== 'unlocks';
+    this.titlePrompt.hidden = view !== 'main';
+    this.titleStats.hidden = view !== 'main';
+    if (view === 'main') this.titleMenu.resetFocus();
+    else if (view === 'options') this.titleOptions.resetFocus();
+    else this.titleBack.resetFocus();
+  }
+
+  private renderProgress(progress: ProgressView): void {
+    const { stats, records, unlocks } = progress;
+    this.titleStats.textContent =
+      stats.runs === 0
+        ? 'No runs yet'
+        : `Best ${Math.floor(stats.bestDistance)} m  |  ${stats.runs} runs  |  ${stats.totalKills} kills`;
+
+    this.leaderboardPanel.replaceChildren();
+    if (records.length === 0) {
+      this.leaderboardPanel.append(element('p', 'empty', 'No runs yet. Go run.'));
+    }
+    records.forEach((record, index) => {
+      const minutes = Math.floor(record.seconds / 60);
+      const secs = Math.floor(record.seconds % 60).toString().padStart(2, '0');
+      const date = new Date(record.date).toLocaleDateString();
+      const line = `${Math.floor(record.distance)} m  ${minutes}:${secs}  ${record.kills} kills  ${date}`;
+      this.leaderboardPanel.append(element('p', 'row', `${index + 1}. ${line}`));
+    });
+
+    this.unlocksPanel.replaceChildren();
+    for (const unlock of unlocks) {
+      const card = element('div', unlock.earned ? 'unlock is-earned' : 'unlock');
+      card.append(
+        element('p', 'unlock-title', `${unlock.title}  ${unlock.earned ? 'Unlocked' : 'Locked'}`),
+        element('p', 'unlock-goal', unlock.earned ? unlock.effect : unlock.goal),
+      );
+      this.unlocksPanel.append(card);
+    }
   }
 
   private cycleAim(): void {
